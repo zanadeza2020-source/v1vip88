@@ -125,24 +125,92 @@ function genCreds() {
   return { username: u, password: p };
 }
 
-function getUserLimits(user, settings) {
-  if (user.role === "admin") return {
-    daily_msgs:  settings.admin_daily_msgs  || 999,
-    max_words:   settings.admin_max_words   || 4000,
-    max_tokens:  4000
-  };
-  // Custom limits override global
+// ── PLANS ─────────────────────────────────────────────────────
+const PLANS = {
+  free: {
+    name: "مجاني",
+    daily_msgs:   20,
+    daily_images:  5,
+    daily_files:   5,
+    max_words:   400,
+    max_tokens:  1200,
+    max_file_mb:   5,
+    reset_hours:  24
+  },
+  pro: {
+    name: "مدفوع",
+    daily_msgs:   200,
+    daily_images:  50,
+    daily_files:   50,
+    max_words:   2000,
+    max_tokens:  4000,
+    max_file_mb:  20,
+    reset_hours:  24
+  },
+  admin: {
+    name: "مشرف",
+    daily_msgs:   9999,
+    daily_images: 999,
+    daily_files:  999,
+    max_words:   8000,
+    max_tokens:  4000,
+    max_file_mb:  50,
+    reset_hours:  24
+  }
+};
+
+function getPlan(user) {
+  if (user.role === "admin") return PLANS.admin;
+  return PLANS[user.plan] || PLANS.free;
+}
+
+function checkUsage(user) {
+  const plan = getPlan(user);
+  const lastReset = user.last_reset ? new Date(user.last_reset) : new Date(0);
+  const hoursSince = (Date.now() - lastReset.getTime()) / 3600000;
+
+  // Reset after 24h
+  if (hoursSince >= plan.reset_hours) {
+    user.daily_msgs_used   = 0;
+    user.daily_images_used = 0;
+    user.daily_files_used  = 0;
+    user.last_reset = now();
+  }
+
   return {
-    daily_msgs: user.custom_daily_msgs  ?? (settings.default_daily_msgs  || 30),
-    max_words:  user.custom_max_words   ?? (settings.default_max_words   || 400),
-    max_tokens: user.custom_max_tokens  ?? (settings.default_max_tokens  || 1200)
+    plan,
+    msgs:   { used: user.daily_msgs_used   || 0, limit: plan.daily_msgs   },
+    images: { used: user.daily_images_used || 0, limit: plan.daily_images },
+    files:  { used: user.daily_files_used  || 0, limit: plan.daily_files  },
+    reset_in: Math.max(0, plan.reset_hours - hoursSince),
+    msgs_ok:   (user.daily_msgs_used   || 0) < plan.daily_msgs,
+    images_ok: (user.daily_images_used || 0) < plan.daily_images,
+    files_ok:  (user.daily_files_used  || 0) < plan.daily_files
+  };
+}
+
+function getUserLimits(user, settings) {
+  const plan = getPlan(user);
+  return {
+    daily_msgs:  user.custom_daily_msgs  ?? plan.daily_msgs,
+    max_words:   user.custom_max_words   ?? plan.max_words,
+    max_tokens:  plan.max_tokens,
+    max_file_mb: plan.max_file_mb
   };
 }
 
 function checkDailyLimit(user, settings) {
-  const lim  = getUserLimits(user, settings);
-  const used = user.usage_date === today() ? (user.daily_used || 0) : 0;
-  return { ok: used < lim.daily_msgs, used, limit: lim.daily_msgs };
+  const usage = checkUsage(user);
+  return { ok: usage.msgs_ok, used: usage.msgs.used, limit: usage.msgs.limit };
+}
+
+// ── DEVICE FINGERPRINT ────────────────────────────────────────
+function getDeviceId(req) {
+  const ua  = req.headers["user-agent"] || "";
+  const lang= req.headers["accept-language"] || "";
+  const enc = req.headers["accept-encoding"] || "";
+  const raw = ua + "|" + lang + "|" + enc;
+  return crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32);
 }
 
 // ── SECURITY MIDDLEWARE ───────────────────────────────────────
@@ -306,27 +374,44 @@ app.post("/api/auth/register", regLimiter, (req, res) => {
   if (userCount >= (db.settings?.max_users || 100))
     return res.status(403).json({ error: "User limit reached", error_ar: "تم الوصول لحد المستخدمين" });
 
+  // ── DEVICE CHECK: حساب واحد لكل جهاز ──
+  const deviceId = getDeviceId(req);
+  const existingDevice = Object.values(db.users).find(u => u.device_id === deviceId);
+  if (existingDevice) {
+    // جهاز موجود — أعد توليد session للحساب الموجود
+    const token = randToken();
+    const sessions = loadSessions();
+    sessions[token] = { user_id: existingDevice.id, username: existingDevice.username, role: existingDevice.role, created: Date.now(), ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100), device_id: deviceId };
+    saveSessions(sessions);
+    setSessionCookie(res, token);
+    existingDevice.last_active = now();
+    logEvent(db, "device_relogin", { username: existingDevice.username }); saveDB(db);
+    return res.json({ username: existingDevice.username, role: existingDevice.role, version: APP_VERSION, new_user: false, device_existing: true });
+  }
+
   // Auto-create
   const { username: un, password: pw } = genCreds();
   const id = randId(16);
   db.users[id] = {
     id, username: un, password_hash: hashPassword(pw), role: "user",
+    plan: "free",
     created: now(), last_active: now(),
-    daily_used: 0, usage_date: today(),
+    last_reset: now(),
+    daily_msgs_used: 0, daily_images_used: 0, daily_files_used: 0,
     total_msgs: 0, total_tokens: 0,
     theme: "dark", personality: "precise", lang: "ar",
     conversations: {}, memory: {}, long_memory: [],
     is_banned: false, ban_reason: "",
     custom_daily_msgs: null, custom_max_words: null, custom_max_tokens: null,
-    notes: ""
+    notes: "", device_id: deviceId, ip_registered: req.ip
   };
   const token = randToken();
   const sessions = loadSessions();
-  sessions[token] = { user_id: id, username: un, role: "user", created: Date.now(), ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100) };
+  sessions[token] = { user_id: id, username: un, role: "user", created: Date.now(), ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100), device_id: deviceId };
   saveSessions(sessions);
   setSessionCookie(res, token);
-  logEvent(db, "register", { username: un }); saveDB(db);
-  res.json({ username: un, password: pw, role: "user", version: APP_VERSION, new_user: true });
+  logEvent(db, "register", { username: un, device: deviceId.slice(0,8) }); saveDB(db);
+  res.json({ username: un, password: pw, role: "user", plan: "free", version: APP_VERSION, new_user: true });
 });
 
 app.post("/api/auth/login", loginLimiter, (req, res) => {
@@ -361,15 +446,24 @@ app.get("/api/me", requireAuth, checkMaintenance, (req, res) => {
   const db = loadDB();
   const u  = db.users[req.user.user_id];
   if (!u || u.is_banned) return res.status(403).json({ error_ar: "غير مصرح" });
-  const lim = checkDailyLimit(u, db.settings || {});
+  const usage  = checkUsage(u);
   const limits = getUserLimits(u, db.settings || {});
+  saveDB(db); // save reset if happened
   res.json({
     username: u.username, role: u.role, theme: u.theme,
     personality: u.personality, lang: u.lang || "ar",
     version: APP_VERSION, total_msgs: u.total_msgs || 0,
-    daily_used: lim.used, daily_limit: lim.limit,
-    max_words: limits.max_words, created: u.created,
-    memory_count: (u.long_memory || []).length
+    plan: u.plan || "free", plan_name: usage.plan.name,
+    // msgs
+    daily_used: usage.msgs.used, daily_limit: usage.msgs.limit,
+    // images
+    images_used: usage.images.used, images_limit: usage.images.limit,
+    // files
+    files_used: usage.files.used, files_limit: usage.files.limit,
+    // reset
+    reset_in_hours: Math.round(usage.reset_in * 10) / 10,
+    max_words: limits.max_words, max_file_mb: limits.max_file_mb,
+    created: u.created, memory_count: (u.long_memory || []).length
   });
 });
 
@@ -555,9 +649,19 @@ async function generateImage(prompt) {
 app.post("/api/generate-image", requireAuth, chatLimiter, async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error_ar: "أدخل وصف الصورة" });
+  const db = loadDB();
+  const u  = db.users[req.user.user_id];
+  if (!u) return res.status(404).json({ error_ar: "غير موجود" });
+  const usage = checkUsage(u);
+  if (!usage.images_ok) return res.status(429).json({
+    error_ar: `وصلت لحد الصور (${usage.images.limit}/يوم). يتجدد بعد ${Math.ceil(usage.reset_in)} ساعة`
+  });
   const img = await generateImage(sanitize(prompt, 500));
   if (!img) return res.status(503).json({ error_ar: "فشل توليد الصورة، حاول مجدداً" });
-  res.json({ image: img });
+  // Increment counter
+  u.daily_images_used = (u.daily_images_used || 0) + 1;
+  saveDB(db);
+  res.json({ image: img, remaining_images: usage.images.limit - u.daily_images_used });
 });
 
 // ── CHAT STREAM ───────────────────────────────────────────────
@@ -572,14 +676,16 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
   const u   = db.users[req.user.user_id];
   if (!u || u.is_banned) return res.status(403).json({ error_ar: "غير مصرح" });
 
-  const settings = db.settings || {};
-  const lim = getUserLimits(u, settings);
-  const limitCheck = checkDailyLimit(u, settings);
+  const usage = checkUsage(u);
+  const lim   = getUserLimits(u, db.settings || {});
 
   if (msg.length > 8000) return res.status(400).json({ error_ar: "الرسالة طويلة جداً" });
   const wc = msg.trim().split(/\s+/).filter(Boolean).length;
   if (wc > lim.max_words) return res.status(429).json({ error_ar: `تجاوزت حد ${lim.max_words} كلمة` });
-  if (!limitCheck.ok) return res.status(429).json({ error_ar: `وصلت للحد اليومي (${lim.daily_msgs} رسالة)` });
+  if (!usage.msgs_ok) return res.status(429).json({
+    error_ar: `وصلت للحد اليومي (${usage.msgs.limit} رسالة). يتجدد بعد ${Math.ceil(usage.reset_in)} ساعة`,
+    reset_in: usage.reset_in
+  });
   if (u.last_msg_ts && Date.now() - u.last_msg_ts < 1500) return res.status(429).json({ error_ar: "انتظر قبل الإرسال" });
 
   // Auto-create conversation if not exists
@@ -592,17 +698,20 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
   const conv = u.conversations?.[cid];
   if (!conv) return res.status(404).json({ error_ar: "المحادثة غير موجودة" });
 
-  // Validate images
+  // Validate images with plan limit
   let safeImgs = [];
-  if (Array.isArray(images)) {
+  if (Array.isArray(images) && images.length > 0) {
+    if (!usage.images_ok) return res.status(429).json({
+      error_ar: `وصلت لحد الصور اليومي (${usage.images.limit}). يتجدد بعد ${Math.ceil(usage.reset_in)} ساعة`
+    });
     for (const img of images.slice(0, 3)) {
       if (typeof img !== "string" || !img.startsWith("data:image/")) continue;
-      if (img.length * 0.75 > 10 * 1024 * 1024) continue;
+      if (img.length * 0.75 > lim.max_file_mb * 1024 * 1024) continue;
       safeImgs.push(img);
     }
   }
 
-  // Validate & extract docs properly
+  // Validate & extract docs with plan limit
   let safeDocs = [];
   if (Array.isArray(documents)) {
     for (const doc of documents.slice(0, 3)) {
@@ -757,6 +866,10 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
       c2.messages.push({ role: "assistant", content: fullReply, tokens, model, deep: !!deep, ts: now() });
       u2.total_msgs   = (u2.total_msgs || 0) + 1;
       u2.total_tokens = (u2.total_tokens || 0) + tokens;
+      // Update plan usage counters
+      u2.daily_msgs_used   = (u2.daily_msgs_used   || 0) + 1;
+      if (safeImgs.length > 0) u2.daily_images_used = (u2.daily_images_used || 0) + safeImgs.length;
+      if (safeDocs.length > 0) u2.daily_files_used  = (u2.daily_files_used  || 0) + safeDocs.length;
     }
 
     // Extract memory
@@ -1011,13 +1124,14 @@ app.put("/api/superadmin/user/:username", requireSuperAdmin, (req, res) => {
   const db = loadDB();
   const u  = Object.values(db.users).find(x=>x.username===req.params.username);
   if (!u) return res.status(404).json({ error:"Not found" });
-  const { role, is_banned, ban_reason, custom_daily_msgs, custom_max_words, reset_limit, notes } = req.body;
+  const { role, is_banned, ban_reason, custom_daily_msgs, custom_max_words, reset_limit, notes, plan } = req.body;
   if (role && ["user","admin"].includes(role)) u.role = role;
+  if (plan && ["free","pro"].includes(plan)) u.plan = plan;
   if (typeof is_banned === "boolean") u.is_banned = is_banned;
   if (ban_reason !== undefined) u.ban_reason = sanitize(ban_reason, 200);
   if (custom_daily_msgs !== undefined) u.custom_daily_msgs = custom_daily_msgs===null?null:parseInt(custom_daily_msgs)||null;
   if (custom_max_words !== undefined)  u.custom_max_words  = custom_max_words===null?null:parseInt(custom_max_words)||null;
-  if (reset_limit) { u.daily_used=0; u.usage_date=today(); }
+  if (reset_limit) { u.daily_msgs_used=0; u.daily_images_used=0; u.daily_files_used=0; u.last_reset=now(); }
   if (notes !== undefined) u.notes = sanitize(notes, 500);
   logEvent(db, "superadmin_update", { target:u.username, changes:req.body }); saveDB(db);
   res.json({ ok:true });
