@@ -149,23 +149,10 @@ function checkDailyLimit(user, settings) {
 app.set("trust proxy", 1);
 
 app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc:  ["'self'", "'unsafe-inline'"],
-      styleSrc:   ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc:    ["'self'", "https://fonts.gstatic.com", "https://fonts.googleapis.com"],
-      imgSrc:     ["'self'", "data:", "blob:"],
-      connectSrc: ["'self'", "https://api.mistral.ai", "https://api-inference.huggingface.co", "https://api.search.brave.com"],
-      frameSrc:   ["'none'"],
-      objectSrc:  ["'none'"],
-      baseUri:    ["'self'"]
-    }
-  },
-  xFrameOptions:           { action: "deny" },
-  hsts:                    { maxAge: 31536000, includeSubDomains: true, preload: true },
-  referrerPolicy:          { policy: "strict-origin-when-cross-origin" },
-  permittedCrossDomainPolicies: { permittedPolicies: "none" }
+  contentSecurityPolicy: false,
+  xFrameOptions: { action: "deny" },
+  hsts: { maxAge: 31536000, includeSubDomains: true },
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" }
 }));
 
 // Remove fingerprinting headers
