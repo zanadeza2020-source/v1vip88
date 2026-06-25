@@ -1,57 +1,129 @@
 require("dotenv").config();
-const express    = require("express");
-const cors       = require("cors");
-const helmet     = require("helmet");
-const rateLimit  = require("express-rate-limit");
-const slowDown   = require("express-slow-down");
-const crypto     = require("crypto");
-const path       = require("path");
-const fs         = require("fs");
-const fetch      = (...a) => import("node-fetch").then(({ default: f }) => f(...a));
+const express   = require("express");
+const cors      = require("cors");
+const helmet    = require("helmet");
+const rateLimit = require("express-rate-limit");
+const slowDown  = require("express-slow-down");
+const crypto    = require("crypto");
+const path      = require("path");
+const fs        = require("fs");
+const mongoose  = require("mongoose");
+const fetch     = (...a) => import("node-fetch").then(({ default: f }) => f(...a));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 
-// ── FILE PATHS ────────────────────────────────────────────────
-const DB_FILE   = path.join(__dirname, "db.json");
-const SESS_FILE = path.join(__dirname, "sessions.json");
-const LOG_FILE  = path.join(__dirname, "security.log");
+// ── MONGODB CONNECTION ────────────────────────────────────────
+mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost/medterm", {
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+}).then(() => console.log("✅ MongoDB connected"))
+  .catch(e => console.error("❌ MongoDB error:", e.message));
+
+// ── SCHEMAS ───────────────────────────────────────────────────
+const UserSchema = new mongoose.Schema({
+  _id: String,
+  username: { type: String, unique: true, index: true },
+  password_hash: String,
+  role: { type: String, default: "user" },
+  plan: { type: String, default: "free" },
+  device_id: { type: String, index: true },
+  ip_registered: String,
+  created: String,
+  last_active: String,
+  last_reset: String,
+  daily_msgs_used:   { type: Number, default: 0 },
+  daily_images_used: { type: Number, default: 0 },
+  daily_files_used:  { type: Number, default: 0 },
+  total_msgs:   { type: Number, default: 0 },
+  total_tokens: { type: Number, default: 0 },
+  theme: { type: String, default: "dark" },
+  personality: { type: String, default: "precise" },
+  lang: { type: String, default: "ar" },
+  conversations: { type: Map, of: mongoose.Schema.Types.Mixed, default: {} },
+  memory: { type: Map, of: String, default: {} },
+  long_memory: [String],
+  is_banned: { type: Boolean, default: false },
+  ban_reason: { type: String, default: "" },
+  custom_daily_msgs:   { type: Number, default: null },
+  custom_max_words:    { type: Number, default: null },
+  custom_max_tokens:   { type: Number, default: null },
+  last_msg_ts: Number,
+  notes: { type: String, default: "" }
+}, { timestamps: false });
+
+const SessionSchema = new mongoose.Schema({
+  _id: String,
+  user_id: String,
+  username: String,
+  role: String,
+  created: { type: Number, default: Date.now },
+  ip: String,
+  ua: String,
+  device_id: String
+});
+SessionSchema.index({ created: 1 }, { expireAfterSeconds: 86400 });
+
+const EventSchema = new mongoose.Schema({
+  type: String,
+  data: mongoose.Schema.Types.Mixed,
+  ts: { type: Date, default: Date.now }
+});
+EventSchema.index({ ts: -1 });
+
+const TrainingSchema = new mongoose.Schema({
+  user_id: String,
+  username: String,
+  user_msg: String,
+  assistant_msg: String,
+  model: String,
+  tokens: Number,
+  deep: Boolean,
+  lang: String,
+  ts: { type: Date, default: Date.now }
+});
+
+const ReportSchema = new mongoose.Schema({
+  _id: String,
+  reporter: String,
+  reason: String,
+  status: { type: String, default: "pending" },
+  ts: { type: Date, default: Date.now }
+});
+
+const SettingsSchema = new mongoose.Schema({
+  _id: { type: String, default: "global" },
+  max_users: { type: Number, default: 100 },
+  registration_open: { type: Boolean, default: true },
+  default_daily_msgs:  { type: Number, default: 20 },
+  default_max_words:   { type: Number, default: 400 },
+  default_max_tokens:  { type: Number, default: 1200 },
+  admin_daily_msgs:    { type: Number, default: 9999 },
+  admin_max_words:     { type: Number, default: 8000 },
+  maintenance_mode:    { type: Boolean, default: false },
+  maintenance_msg:     { type: String, default: "النظام في وضع الصيانة" }
+});
+
+const User     = mongoose.model("User",     UserSchema);
+const Session  = mongoose.model("Session",  SessionSchema);
+const Event    = mongoose.model("Event",    EventSchema);
+const Training = mongoose.model("Training", TrainingSchema);
+const Report   = mongoose.model("Report",   ReportSchema);
+const Settings = mongoose.model("Settings", SettingsSchema);
+
+async function getSettings() {
+  let s = await Settings.findById("global").lean();
+  if (!s) { s = await Settings.create({ _id: "global" }); s = s.toObject(); }
+  return s;
+}
 
 // ── ENCRYPTION ────────────────────────────────────────────────
-const ENC_KEY = crypto.scryptSync(
-  process.env.SECRET || "medterm_default_secret_change_me",
-  "medterm_salt_v2", 32
-);
-
-function encrypt(text) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-gcm", ENC_KEY, iv);
-  let enc = cipher.update(String(text), "utf8", "hex");
-  enc += cipher.final("hex");
-  const tag = cipher.getAuthTag().toString("hex");
-  return iv.toString("hex") + ":" + tag + ":" + enc;
-}
-
-function decrypt(data) {
-  try {
-    const [ivHex, tagHex, enc] = data.split(":");
-    const iv  = Buffer.from(ivHex, "hex");
-    const tag = Buffer.from(tagHex, "hex");
-    const decipher = crypto.createDecipheriv("aes-256-gcm", ENC_KEY, iv);
-    decipher.setAuthTag(tag);
-    let dec = decipher.update(enc, "hex", "utf8");
-    dec += decipher.final("utf8");
-    return dec;
-  } catch { return null; }
-}
+const ENC_KEY = crypto.scryptSync(process.env.SECRET || "medterm_secret_v2", "medterm_salt", 32);
 
 function hashPassword(pw) {
-  return crypto.scryptSync(
-    pw, process.env.SECRET || "salt", 64
-  ).toString("hex");
+  return crypto.scryptSync(pw, process.env.SECRET || "salt", 64).toString("hex");
 }
-
 function verifyPassword(pw, hash) {
   try {
     const attempt = crypto.scryptSync(pw, process.env.SECRET || "salt", 64).toString("hex");
@@ -59,64 +131,24 @@ function verifyPassword(pw, hash) {
   } catch { return false; }
 }
 
-// ── DATABASE ──────────────────────────────────────────────────
-function loadDB() {
-  if (!fs.existsSync(DB_FILE))
-    fs.writeFileSync(DB_FILE, JSON.stringify({
-      users: {}, training: [], events: [], reports: [], shared: {},
-      settings: {
-        max_users: 100,
-        registration_open: true,
-        default_daily_msgs: 30,
-        default_max_words: 400,
-        default_max_tokens: 1200,
-        admin_daily_msgs: 999,
-        admin_max_words: 4000,
-        maintenance_mode: false,
-        maintenance_msg: "النظام في وضع الصيانة"
-      }
-    }));
-  try { return JSON.parse(fs.readFileSync(DB_FILE, "utf8")); }
-  catch (e) { secLog("DB_ERROR", { error: e.message }); return { users:{}, training:[], events:[], reports:[], shared:{}, settings:{} }; }
-}
-
-function saveDB(db) {
-  const tmp = DB_FILE + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-  fs.renameSync(tmp, DB_FILE);
-}
-
-function loadSessions() {
-  if (!fs.existsSync(SESS_FILE)) fs.writeFileSync(SESS_FILE, JSON.stringify({}));
-  try { return JSON.parse(fs.readFileSync(SESS_FILE, "utf8")); }
-  catch { return {}; }
-}
-
-function saveSessions(s) { fs.writeFileSync(SESS_FILE, JSON.stringify(s)); }
-
 // ── UTILS ─────────────────────────────────────────────────────
-const now    = () => new Date().toISOString();
-const today  = () => new Date().toISOString().slice(0, 10);
-const randId = (n=16) => crypto.randomBytes(n).toString("hex");
-const randToken = () => crypto.randomBytes(48).toString("base64url");
+const now     = () => new Date().toISOString();
+const randId  = (n=16) => crypto.randomBytes(n).toString("hex");
+const randTok = () => crypto.randomBytes(48).toString("base64url");
 
 function sanitize(s, max=5000) {
   if (typeof s !== "string") return "";
-  return s.replace(/[<>]/g, "").replace(/javascript:/gi, "").trim().slice(0, max);
+  return s.replace(/[<>]/g,"").replace(/javascript:/gi,"").trim().slice(0, max);
 }
 
 function secLog(type, data) {
-  const entry = JSON.stringify({ ts: now(), type, data }) + "\n";
-  try { fs.appendFileSync(LOG_FILE, entry); } catch {}
+  console.log(`[SEC] ${type}:`, JSON.stringify(data));
 }
 
-function logEvent(db, type, data) {
-  if (!db.events) db.events = [];
-  db.events.push({ type, data, ts: now() });
-  if (db.events.length > 1000) db.events = db.events.slice(-1000);
+async function logEvent(type, data) {
+  try { await Event.create({ type, data }); } catch {}
 }
 
-// Generate credentials
 const ADJ  = ["Alpha","Beta","Prime","Elite","Swift","Smart","Bold","Clear","Nova","Apex"];
 const NOUN = ["Mind","Core","Star","Wave","Peak","Flow","Link","Base","Edge","Node"];
 function genCreds() {
@@ -127,36 +159,9 @@ function genCreds() {
 
 // ── PLANS ─────────────────────────────────────────────────────
 const PLANS = {
-  free: {
-    name: "مجاني",
-    daily_msgs:   20,
-    daily_images:  5,
-    daily_files:   5,
-    max_words:   400,
-    max_tokens:  1200,
-    max_file_mb:   5,
-    reset_hours:  24
-  },
-  pro: {
-    name: "مدفوع",
-    daily_msgs:   200,
-    daily_images:  50,
-    daily_files:   50,
-    max_words:   2000,
-    max_tokens:  4000,
-    max_file_mb:  20,
-    reset_hours:  24
-  },
-  admin: {
-    name: "مشرف",
-    daily_msgs:   9999,
-    daily_images: 999,
-    daily_files:  999,
-    max_words:   8000,
-    max_tokens:  4000,
-    max_file_mb:  50,
-    reset_hours:  24
-  }
+  free:  { name:"مجاني",  daily_msgs:20,   daily_images:5,  daily_files:5,  max_words:400,  max_tokens:1200, max_file_mb:5,  reset_hours:24 },
+  pro:   { name:"VIP ⭐", daily_msgs:200,  daily_images:50, daily_files:50, max_words:2000, max_tokens:4000, max_file_mb:20, reset_hours:24 },
+  admin: { name:"مشرف",  daily_msgs:9999, daily_images:999,daily_files:999,max_words:8000, max_tokens:4000, max_file_mb:50, reset_hours:24 }
 };
 
 function getPlan(user) {
@@ -168,15 +173,12 @@ function checkUsage(user) {
   const plan = getPlan(user);
   const lastReset = user.last_reset ? new Date(user.last_reset) : new Date(0);
   const hoursSince = (Date.now() - lastReset.getTime()) / 3600000;
-
-  // Reset after 24h
   if (hoursSince >= plan.reset_hours) {
     user.daily_msgs_used   = 0;
     user.daily_images_used = 0;
     user.daily_files_used  = 0;
     user.last_reset = now();
   }
-
   return {
     plan,
     msgs:   { used: user.daily_msgs_used   || 0, limit: plan.daily_msgs   },
@@ -189,7 +191,7 @@ function checkUsage(user) {
   };
 }
 
-function getUserLimits(user, settings) {
+function getUserLimits(user) {
   const plan = getPlan(user);
   return {
     daily_msgs:  user.custom_daily_msgs  ?? plan.daily_msgs,
@@ -199,132 +201,60 @@ function getUserLimits(user, settings) {
   };
 }
 
-function checkDailyLimit(user, settings) {
-  const usage = checkUsage(user);
-  return { ok: usage.msgs_ok, used: usage.msgs.used, limit: usage.msgs.limit };
-}
-
-// ── DEVICE FINGERPRINT ────────────────────────────────────────
 function getDeviceId(req) {
-  const ua  = req.headers["user-agent"] || "";
-  const lang= req.headers["accept-language"] || "";
-  const enc = req.headers["accept-encoding"] || "";
-  const raw = ua + "|" + lang + "|" + enc;
-  return crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32);
+  const ua   = req.headers["user-agent"] || "";
+  const lang = req.headers["accept-language"] || "";
+  return crypto.createHash("sha256").update(ua + "|" + lang).digest("hex").slice(0, 32);
 }
 
-// ── SECURITY MIDDLEWARE ───────────────────────────────────────
+// ── MIDDLEWARE ────────────────────────────────────────────────
 app.set("trust proxy", 1);
-
-app.use(helmet({
-  contentSecurityPolicy: false,
-  xFrameOptions: { action: "deny" },
-  hsts: { maxAge: 31536000, includeSubDomains: true },
-  referrerPolicy: { policy: "strict-origin-when-cross-origin" }
-}));
-
-// Remove fingerprinting headers
-app.use((req, res, next) => {
-  res.removeHeader("X-Powered-By");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
-  next();
-});
-
+app.use(helmet({ contentSecurityPolicy: false, xFrameOptions: { action: "deny" }, hsts: { maxAge: 31536000 } }));
+app.use((_, res, next) => { res.removeHeader("X-Powered-By"); next(); });
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "30mb" }));
 
-// ── RATE LIMITERS ─────────────────────────────────────────────
-// Global API limit
 app.use("/api/", rateLimit({
-  windowMs: 60000, max: 100, standardHeaders: true, legacyHeaders: false,
-  message: { error: "Too many requests", error_ar: "طلبات كثيرة جداً" },
-  handler: (req, res, _next, options) => {
-    secLog("RATE_LIMIT", { ip: req.ip, path: req.path });
-    res.status(429).json(options.message);
-  }
+  windowMs: 60000, max: 120,
+  message: { error_ar: "طلبات كثيرة جداً، انتظر دقيقة" },
+  handler: (req, res, _, opts) => { secLog("RATE_LIMIT", { ip: req.ip }); res.status(429).json(opts.message); }
 }));
+app.use("/api/", slowDown({ windowMs: 60000, delayAfter: 25, delayMs: () => 300, maxDelayMs: 4000 }));
 
-// Slow down after 20 req/min
-app.use("/api/", slowDown({
-  windowMs: 60000, delayAfter: 20, delayMs: () => 300, maxDelayMs: 5000
-}));
-
-// Login — very strict
 const loginLimiter = rateLimit({
   windowMs: 15 * 60000, max: 5, skipSuccessfulRequests: true,
-  message: { error: "Too many login attempts. Try again in 15 minutes.", error_ar: "محاولات دخول كثيرة. انتظر 15 دقيقة." },
-  handler: (req, res, _next, options) => {
-    secLog("LOGIN_ABUSE", { ip: req.ip, username: req.body?.username });
-    res.status(429).json(options.message);
-  }
+  message: { error_ar: "محاولات كثيرة، انتظر 15 دقيقة" },
+  handler: (req, res, _, opts) => { secLog("LOGIN_ABUSE", { ip: req.ip }); res.status(429).json(opts.message); }
 });
-
-// Registration limit
-const regLimiter = rateLimit({
-  windowMs: 60 * 60000, max: 3,
-  message: { error: "Registration limit reached.", error_ar: "تم تجاوز حد التسجيل." }
-});
-
-// Chat limit — per user
+const regLimiter  = rateLimit({ windowMs: 3600000, max: 5, message: { error_ar: "تم تجاوز حد التسجيل" } });
 const chatLimiter = rateLimit({
-  windowMs: 60000, max: 20,
-  keyGenerator: (req) => {
-    const cookie = req.headers.cookie || "";
-    const m = cookie.match(/mt_s=([^;]+)/);
-    return m ? m[1].slice(0, 32) : req.ip;
-  },
-  message: { error: "Sending too fast. Slow down.", error_ar: "ترسل بسرعة كبيرة." }
+  windowMs: 60000, max: 25,
+  keyGenerator: req => { const m = (req.headers.cookie||"").match(/mt_s=([^;]+)/); return m ? m[1].slice(0,32) : req.ip; },
+  message: { error_ar: "ترسل بسرعة كبيرة، انتظر قليلاً" }
 });
 
 app.use(express.static(path.join(__dirname, "../frontend")));
 
 // ── AUTH MIDDLEWARE ───────────────────────────────────────────
-function requireAuth(req, res, next) {
-  const cookie = req.headers.cookie || "";
-  const m = cookie.match(/mt_s=([^;]+)/);
+async function requireAuth(req, res, next) {
+  const m = (req.headers.cookie||"").match(/mt_s=([^;]+)/);
   const token = m ? m[1] : null;
-  if (!token) return res.status(401).json({ error: "Not authenticated", error_ar: "غير مصادق" });
+  if (!token) return res.status(401).json({ error_ar: "غير مصادق" });
+  const sess = await Session.findById(token).lean();
+  if (!sess) return res.status(401).json({ error_ar: "انتهت الجلسة" });
+  req.user = sess; req.sessionToken = token; next();
+}
 
-  const sessions = loadSessions();
-  const sess = sessions[token];
-  if (!sess) return res.status(401).json({ error: "Session expired", error_ar: "انتهت الجلسة" });
-
-  // 24h expiry
-  if (Date.now() - sess.created > 86400000) {
-    delete sessions[token]; saveSessions(sessions);
-    clearCookie(res);
-    return res.status(401).json({ error: "Session expired", error_ar: "انتهت الجلسة" });
-  }
-
-  // Browser fingerprint check
-  const fp = req.headers["user-agent"] || "";
-  if (sess.ua && sess.ua !== fp.slice(0, 100)) {
-    secLog("FINGERPRINT_MISMATCH", { token: token.slice(0,8), ip: req.ip });
-    // Allow but log — don't block (mobile agents can change)
-  }
-
-  req.user = sess;
-  req.sessionToken = token;
+async function requireAdmin(req, res, next) {
+  if (req.user.role !== "admin") return res.status(403).json({ error_ar: "ممنوع" });
   next();
 }
 
-function requireAdmin(req, res, next) {
-  if (req.user.role !== "admin")
-    return res.status(403).json({ error: "Forbidden", error_ar: "ممنوع" });
-  next();
-}
-
-// Maintenance mode check
-function checkMaintenance(req, res, next) {
-  if (req.path.startsWith("/api/auth") || req.path.startsWith("/api/admin")) return next();
-  const db = loadDB();
-  if (db.settings?.maintenance_mode && req.user?.role !== "admin") {
-    return res.status(503).json({
-      error: db.settings.maintenance_msg || "Maintenance mode",
-      error_ar: db.settings.maintenance_msg || "وضع الصيانة"
-    });
-  }
+async function checkMaintenance(req, res, next) {
+  if (req.path.startsWith("/api/auth") || req.path.startsWith("/api/superadmin")) return next();
+  const s = await getSettings();
+  if (s.maintenance_mode && req.user?.role !== "admin")
+    return res.status(503).json({ error_ar: s.maintenance_msg || "وضع الصيانة" });
   next();
 }
 
@@ -336,332 +266,249 @@ function clearCookie(res) {
 }
 
 // ── AUTH ROUTES ───────────────────────────────────────────────
-app.post("/api/auth/register", regLimiter, (req, res) => {
-  const db = loadDB();
-  const { username, password } = req.body;
+app.post("/api/auth/register", regLimiter, async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const s = await getSettings();
 
-  // Check maintenance
-  if (db.settings?.maintenance_mode)
-    return res.status(503).json({ error_ar: "النظام في وضع الصيانة" });
-
-  // Login with existing credentials
-  if (username && password) {
-    const u = Object.values(db.users).find(x => x.username === username);
-    if (!u || !verifyPassword(password, u.password_hash)) {
-      secLog("FAILED_LOGIN", { username: sanitize(username), ip: req.ip });
-      logEvent(db, "failed_login", { username: sanitize(username) }); saveDB(db);
-      return res.status(401).json({ error: "Invalid credentials", error_ar: "بيانات غير صحيحة" });
+    // Login with existing creds
+    if (username && password) {
+      const u = await User.findOne({ username }).lean();
+      if (!u || !verifyPassword(password, u.password_hash)) {
+        await logEvent("failed_login", { username: sanitize(username) });
+        return res.status(401).json({ error_ar: "بيانات غير صحيحة" });
+      }
+      if (u.is_banned) return res.status(403).json({ error_ar: "حسابك محظور: " + u.ban_reason });
+      const token = randTok();
+      await Session.create({ _id: token, user_id: u._id, username: u.username, role: u.role, ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100) });
+      setSessionCookie(res, token);
+      await User.findByIdAndUpdate(u._id, { last_active: now() });
+      await logEvent("login", { username: u.username });
+      return res.json({ username: u.username, role: u.role, version: APP_VERSION });
     }
-    const token = randToken();
-    const sessions = loadSessions();
-    sessions[token] = {
-      user_id: u.id, username: u.username, role: u.role,
-      created: Date.now(), ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100)
-    };
-    saveSessions(sessions);
+
+    if (!s.registration_open) return res.status(403).json({ error_ar: "التسجيل مغلق" });
+    const count = await User.countDocuments();
+    if (count >= s.max_users) return res.status(403).json({ error_ar: "وصلنا لحد المستخدمين" });
+
+    // Device check
+    const deviceId = getDeviceId(req);
+    const existing = await User.findOne({ device_id: deviceId }).lean();
+    if (existing) {
+      if (existing.is_banned) return res.status(403).json({ error_ar: "هذا الجهاز محظور" });
+      const token = randTok();
+      await Session.create({ _id: token, user_id: existing._id, username: existing.username, role: existing.role, device_id: deviceId, ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100) });
+      setSessionCookie(res, token);
+      await User.findByIdAndUpdate(existing._id, { last_active: now() });
+      await logEvent("device_relogin", { username: existing.username });
+      return res.json({ username: existing.username, role: existing.role, version: APP_VERSION, new_user: false });
+    }
+
+    // Create new user
+    const { username: un, password: pw } = genCreds();
+    const id = randId(16);
+    await User.create({ _id: id, username: un, password_hash: hashPassword(pw), device_id: deviceId, ip_registered: req.ip, created: now(), last_active: now(), last_reset: now() });
+    const token = randTok();
+    await Session.create({ _id: token, user_id: id, username: un, role: "user", device_id: deviceId, ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100) });
     setSessionCookie(res, token);
-    u.last_active = now();
-    logEvent(db, "login", { username: u.username }); saveDB(db);
-    return res.json({ username: u.username, role: u.role, version: APP_VERSION });
-  }
-
-  // Check if registration is open
-  if (!db.settings?.registration_open)
-    return res.status(403).json({ error: "Registration closed", error_ar: "التسجيل مغلق" });
-
-  // Check max users
-  const userCount = Object.keys(db.users).length;
-  if (userCount >= (db.settings?.max_users || 100))
-    return res.status(403).json({ error: "User limit reached", error_ar: "تم الوصول لحد المستخدمين" });
-
-  // ── DEVICE CHECK: حساب واحد لكل جهاز ──
-  const deviceId = getDeviceId(req);
-  const existingDevice = Object.values(db.users).find(u => u.device_id === deviceId);
-  if (existingDevice) {
-    // جهاز موجود — أعد توليد session للحساب الموجود
-    const token = randToken();
-    const sessions = loadSessions();
-    sessions[token] = { user_id: existingDevice.id, username: existingDevice.username, role: existingDevice.role, created: Date.now(), ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100), device_id: deviceId };
-    saveSessions(sessions);
-    setSessionCookie(res, token);
-    existingDevice.last_active = now();
-    logEvent(db, "device_relogin", { username: existingDevice.username }); saveDB(db);
-    return res.json({ username: existingDevice.username, role: existingDevice.role, version: APP_VERSION, new_user: false, device_existing: true });
-  }
-
-  // Auto-create
-  const { username: un, password: pw } = genCreds();
-  const id = randId(16);
-  db.users[id] = {
-    id, username: un, password_hash: hashPassword(pw), role: "user",
-    plan: "free",
-    created: now(), last_active: now(),
-    last_reset: now(),
-    daily_msgs_used: 0, daily_images_used: 0, daily_files_used: 0,
-    total_msgs: 0, total_tokens: 0,
-    theme: "dark", personality: "precise", lang: "ar",
-    conversations: {}, memory: {}, long_memory: [],
-    is_banned: false, ban_reason: "",
-    custom_daily_msgs: null, custom_max_words: null, custom_max_tokens: null,
-    notes: "", device_id: deviceId, ip_registered: req.ip
-  };
-  const token = randToken();
-  const sessions = loadSessions();
-  sessions[token] = { user_id: id, username: un, role: "user", created: Date.now(), ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100), device_id: deviceId };
-  saveSessions(sessions);
-  setSessionCookie(res, token);
-  logEvent(db, "register", { username: un, device: deviceId.slice(0,8) }); saveDB(db);
-  res.json({ username: un, password: pw, role: "user", plan: "free", version: APP_VERSION, new_user: true });
+    await logEvent("register", { username: un });
+    res.json({ username: un, password: pw, role: "user", plan: "free", version: APP_VERSION, new_user: true });
+  } catch (e) { console.error("Register error:", e); res.status(500).json({ error_ar: "خطأ في السيرفر" }); }
 });
 
-app.post("/api/auth/login", loginLimiter, (req, res) => {
-  const db = loadDB();
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error_ar: "أدخل البيانات" });
-
-  const u = Object.values(db.users).find(x => x.username === username);
-  if (!u || !verifyPassword(password, u.password_hash)) {
-    secLog("FAILED_LOGIN", { username: sanitize(username), ip: req.ip });
-    logEvent(db, "failed_login", { username: sanitize(username) }); saveDB(db);
-    return res.status(401).json({ error: "Invalid credentials", error_ar: "بيانات غير صحيحة" });
-  }
-  if (u.is_banned) return res.status(403).json({ error_ar: "حسابك محظور: " + (u.ban_reason || "") });
-
-  const token = randToken();
-  const sessions = loadSessions();
-  sessions[token] = { user_id: u.id, username: u.username, role: u.role, created: Date.now(), ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100) };
-  saveSessions(sessions);
-  setSessionCookie(res, token);
-  u.last_active = now(); logEvent(db, "login", { username: u.username }); saveDB(db);
-  res.json({ username: u.username, role: u.role, version: APP_VERSION });
+app.post("/api/auth/login", loginLimiter, async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error_ar: "أدخل البيانات" });
+    const u = await User.findOne({ username }).lean();
+    if (!u || !verifyPassword(password, u.password_hash)) {
+      await logEvent("failed_login", { username: sanitize(username) });
+      return res.status(401).json({ error_ar: "بيانات غير صحيحة" });
+    }
+    if (u.is_banned) return res.status(403).json({ error_ar: "حسابك محظور: " + u.ban_reason });
+    const token = randTok();
+    await Session.create({ _id: token, user_id: u._id, username: u.username, role: u.role, ip: req.ip, ua: (req.headers["user-agent"]||"").slice(0,100) });
+    setSessionCookie(res, token);
+    await User.findByIdAndUpdate(u._id, { last_active: now() });
+    await logEvent("login", { username: u.username });
+    res.json({ username: u.username, role: u.role, version: APP_VERSION });
+  } catch (e) { res.status(500).json({ error_ar: "خطأ في السيرفر" }); }
 });
 
-app.post("/api/auth/logout", requireAuth, (req, res) => {
-  const sessions = loadSessions();
-  delete sessions[req.sessionToken]; saveSessions(sessions);
+app.post("/api/auth/logout", requireAuth, async (req, res) => {
+  await Session.findByIdAndDelete(req.sessionToken);
   clearCookie(res); res.json({ ok: true });
 });
 
-app.get("/api/me", requireAuth, checkMaintenance, (req, res) => {
-  const db = loadDB();
-  const u  = db.users[req.user.user_id];
-  if (!u || u.is_banned) return res.status(403).json({ error_ar: "غير مصرح" });
-  const usage  = checkUsage(u);
-  const limits = getUserLimits(u, db.settings || {});
-  saveDB(db); // save reset if happened
-  res.json({
-    username: u.username, role: u.role, theme: u.theme,
-    personality: u.personality, lang: u.lang || "ar",
-    version: APP_VERSION, total_msgs: u.total_msgs || 0,
-    plan: u.plan || "free", plan_name: usage.plan.name,
-    // msgs
-    daily_used: usage.msgs.used, daily_limit: usage.msgs.limit,
-    // images
-    images_used: usage.images.used, images_limit: usage.images.limit,
-    // files
-    files_used: usage.files.used, files_limit: usage.files.limit,
-    // reset
-    reset_in_hours: Math.round(usage.reset_in * 10) / 10,
-    max_words: limits.max_words, max_file_mb: limits.max_file_mb,
-    created: u.created, memory_count: (u.long_memory || []).length
-  });
+app.get("/api/me", requireAuth, checkMaintenance, async (req, res) => {
+  try {
+    const u = await User.findById(req.user.user_id).lean();
+    if (!u || u.is_banned) return res.status(403).json({ error_ar: "غير مصرح" });
+    const usage  = checkUsage(u);
+    const limits = getUserLimits(u);
+    if (usage.msgs.used === 0 && u.last_reset !== u.last_reset) await User.findByIdAndUpdate(u._id, { daily_msgs_used:0, daily_images_used:0, daily_files_used:0, last_reset: now() });
+    res.json({
+      username: u.username, role: u.role, theme: u.theme,
+      personality: u.personality, lang: u.lang || "ar",
+      version: APP_VERSION, total_msgs: u.total_msgs || 0,
+      plan: u.plan || "free", plan_name: usage.plan.name,
+      daily_used: usage.msgs.used, daily_limit: usage.msgs.limit,
+      images_used: usage.images.used, images_limit: usage.images.limit,
+      files_used: usage.files.used, files_limit: usage.files.limit,
+      reset_in_hours: Math.round(usage.reset_in * 10) / 10,
+      max_words: limits.max_words, max_file_mb: limits.max_file_mb,
+      created: u.created, memory_count: (u.long_memory || []).length
+    });
+  } catch (e) { res.status(500).json({ error_ar: "خطأ" }); }
 });
 
 // ── SETTINGS ─────────────────────────────────────────────────
-app.post("/api/settings", requireAuth, (req, res) => {
-  const db = loadDB();
-  const u  = db.users[req.user.user_id];
-  if (!u) return res.status(404).json({ error_ar: "غير موجود" });
+app.post("/api/settings", requireAuth, async (req, res) => {
   const { theme, personality, lang } = req.body;
-  const themes = ["dark","sage","dusk","slate","warm"];
-  const pers   = ["precise","friendly","concise"];
-  const langs  = ["ar","en"];
-  if (theme && themes.includes(theme))   u.theme       = theme;
-  if (personality && pers.includes(personality)) u.personality = personality;
-  if (lang && langs.includes(lang))      u.lang        = lang;
-  u.last_active = now(); saveDB(db);
+  const update = {};
+  if (["dark","sage","dusk","slate","warm"].includes(theme)) update.theme = theme;
+  if (["precise","friendly","concise"].includes(personality)) update.personality = personality;
+  if (["ar","en"].includes(lang)) update.lang = lang;
+  update.last_active = now();
+  await User.findByIdAndUpdate(req.user.user_id, update);
   res.json({ ok: true });
 });
 
 // ── CONVERSATIONS ─────────────────────────────────────────────
-app.get("/api/conversations", requireAuth, checkMaintenance, (req, res) => {
-  const db = loadDB();
-  const u  = db.users[req.user.user_id];
+app.get("/api/conversations", requireAuth, checkMaintenance, async (req, res) => {
+  const u = await User.findById(req.user.user_id).select("conversations").lean();
   if (!u) return res.status(404).json({ error_ar: "غير موجود" });
-  const list = Object.values(u.conversations || {})
+  const convs = Object.values(u.conversations || {})
     .filter(c => !c.archived)
     .sort((a,b) => b.last_msg > a.last_msg ? 1 : -1)
     .slice(0, 50);
-  res.json({ conversations: list });
+  res.json({ conversations: convs });
 });
 
-app.post("/api/conversations", requireAuth, checkMaintenance, (req, res) => {
-  const db = loadDB();
-  const u  = db.users[req.user.user_id];
-  if (!u) return res.status(404).json({ error_ar: "غير موجود" });
+app.post("/api/conversations", requireAuth, checkMaintenance, async (req, res) => {
   const id = randId(12);
-  if (!u.conversations) u.conversations = {};
-  u.conversations[id] = { id, title: req.user.role === "admin" ? "New Chat" : "محادثة", created: now(), last_msg: now(), messages: [], archived: false };
-  saveDB(db); res.json({ conv_id: id });
+  const conv = { id, title: "محادثة", created: now(), last_msg: now(), messages: [], archived: false };
+  await User.findByIdAndUpdate(req.user.user_id, { [`conversations.${id}`]: conv });
+  res.json({ conv_id: id });
 });
 
-app.delete("/api/conversations/:id", requireAuth, (req, res) => {
-  const db = loadDB();
-  const u  = db.users[req.user.user_id];
+app.delete("/api/conversations/:id", requireAuth, async (req, res) => {
   const cid = sanitize(req.params.id);
-  if (u?.conversations?.[cid]) u.conversations[cid].archived = true;
-  saveDB(db); res.json({ ok: true });
+  await User.findByIdAndUpdate(req.user.user_id, { [`conversations.${cid}.archived`]: true });
+  res.json({ ok: true });
 });
 
-app.get("/api/history/:id", requireAuth, (req, res) => {
-  const db = loadDB();
-  const u  = db.users[req.user.user_id];
+app.get("/api/history/:id", requireAuth, async (req, res) => {
+  const u = await User.findById(req.user.user_id).select("conversations").lean();
   const cid = sanitize(req.params.id);
-  const c  = u?.conversations?.[cid];
-  res.json({ messages: (c ? c.messages : []).map(m => ({
-    role: m.role, content: m.content, ts: m.ts,
-    has_image: !!m.has_image, has_doc: !!m.has_doc, deep: !!m.deep
-  }))});
+  const c = u?.conversations?.[cid];
+  res.json({ messages: (c?.messages || []).map(m => ({ role:m.role, content:m.content, ts:m.ts, has_image:!!m.has_image, deep:!!m.deep })) });
 });
 
 // ── MEMORY ────────────────────────────────────────────────────
-app.get("/api/memory", requireAuth, (req, res) => {
-  const db = loadDB(), u = db.users[req.user.user_id];
-  if (!u) return res.status(404).json({ error_ar: "غير موجود" });
-  res.json({ short_memory: u.memory || {}, long_memory: u.long_memory || [] });
+app.get("/api/memory", requireAuth, async (req, res) => {
+  const u = await User.findById(req.user.user_id).select("memory long_memory").lean();
+  res.json({ short_memory: u?.memory || {}, long_memory: u?.long_memory || [] });
 });
-
-app.delete("/api/memory", requireAuth, (req, res) => {
-  const db = loadDB(), u = db.users[req.user.user_id];
-  if (!u) return res.status(404).json({ error_ar: "غير موجود" });
-  u.memory = {}; u.long_memory = []; saveDB(db); res.json({ ok: true });
+app.delete("/api/memory", requireAuth, async (req, res) => {
+  await User.findByIdAndUpdate(req.user.user_id, { memory: {}, long_memory: [] });
+  res.json({ ok: true });
 });
 
 // ── SEARCH HISTORY ────────────────────────────────────────────
-app.get("/api/search-history", requireAuth, (req, res) => {
-  const db = loadDB(), u = db.users[req.user.user_id];
-  const q  = sanitize(req.query.q || "", 200);
-  if (!q || q.length < 2) return res.json({ results: [] });
+app.get("/api/search-history", requireAuth, async (req, res) => {
+  const q = sanitize(req.query.q || "", 200);
+  if (q.length < 2) return res.json({ results: [] });
+  const u = await User.findById(req.user.user_id).select("conversations").lean();
   const results = [];
-  Object.values(u.conversations || {}).filter(c => !c.archived).forEach(conv => {
-    conv.messages.forEach(m => {
-      if (m.content?.toLowerCase().includes(q.toLowerCase())) {
-        results.push({ conv_id: conv.id, conv_title: conv.title, role: m.role, content: m.content.slice(0, 200), ts: m.ts });
-      }
+  Object.values(u?.conversations || {}).filter(c => !c.archived).forEach(conv => {
+    (conv.messages || []).forEach(m => {
+      if (m.content?.toLowerCase().includes(q.toLowerCase()))
+        results.push({ conv_id:conv.id, conv_title:conv.title, role:m.role, content:m.content.slice(0,200), ts:m.ts });
     });
   });
   res.json({ results: results.slice(0, 20) });
 });
 
 // ── SHARE ─────────────────────────────────────────────────────
-app.post("/api/share/:conv_id", requireAuth, (req, res) => {
-  const db = loadDB(), u = db.users[req.user.user_id];
+const ShareSchema = new mongoose.Schema({ _id:String, title:String, username:String, messages:[mongoose.Schema.Types.Mixed], expires:Date });
+ShareSchema.index({ expires: 1 }, { expireAfterSeconds: 0 });
+const Share = mongoose.model("Share", ShareSchema);
+
+app.post("/api/share/:conv_id", requireAuth, async (req, res) => {
   const cid = sanitize(req.params.conv_id);
+  const u = await User.findById(req.user.user_id).select("conversations").lean();
   const conv = u?.conversations?.[cid];
   if (!conv) return res.status(404).json({ error_ar: "غير موجود" });
   const sid = randId(8);
-  if (!db.shared) db.shared = {};
-  db.shared[sid] = {
-    id: sid, title: conv.title, username: req.user.username,
-    messages: conv.messages.map(m => ({ role: m.role, content: m.content, ts: m.ts })),
-    created: now(), expires: new Date(Date.now() + 7*86400000).toISOString()
-  };
-  saveDB(db); res.json({ share_id: sid, url: "/shared/" + sid });
+  await Share.create({ _id:sid, title:conv.title, username:req.user.username, messages:conv.messages.map(m=>({role:m.role,content:m.content,ts:m.ts})), expires:new Date(Date.now()+7*86400000) });
+  res.json({ share_id:sid, url:"/shared/"+sid });
 });
 
-app.get("/api/shared/:id", (req, res) => {
-  const db = loadDB();
-  const s  = db.shared?.[req.params.id];
-  if (!s) return res.status(404).json({ error_ar: "غير موجود" });
-  if (new Date(s.expires) < new Date()) {
-    delete db.shared[req.params.id]; saveDB(db);
-    return res.status(410).json({ error_ar: "انتهت صلاحية الرابط" });
-  }
+app.get("/api/shared/:id", async (req, res) => {
+  const s = await Share.findById(req.params.id).lean();
+  if (!s) return res.status(404).json({ error_ar: "الرابط غير صالح أو منتهي" });
   res.json(s);
 });
-
-app.get("/shared/:id", (_, res) => res.sendFile(path.join(__dirname, "../frontend/shared.html")));
+app.get("/shared/:id", (_, res) => res.sendFile(path.join(__dirname,"../frontend/shared.html")));
 
 // ── REPORT ────────────────────────────────────────────────────
-app.post("/api/report", requireAuth, (req, res) => {
-  const db = loadDB();
+app.post("/api/report", requireAuth, async (req, res) => {
   const { reason } = req.body;
   if (!reason || reason.length < 5) return res.status(400).json({ error_ar: "اذكر السبب" });
-  if (!db.reports) db.reports = [];
-  db.reports.push({ id: randId(8), reporter: req.user.username, reason: sanitize(reason, 500), status: "pending", ts: now() });
-  logEvent(db, "report", { by: req.user.username });
-  saveDB(db); res.json({ ok: true });
+  await Report.create({ _id:randId(8), reporter:req.user.username, reason:sanitize(reason,500) });
+  await logEvent("report", { by:req.user.username });
+  res.json({ ok:true });
 });
 
-// ── WEB SEARCH via Mistral ────────────────────────────────────
+// ── MISTRAL HELPERS ───────────────────────────────────────────
+async function callMistral(messages, model="mistral-large-latest", temperature=0.3, maxTokens=1200) {
+  const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type":"application/json", "Authorization":"Bearer "+process.env.MISTRAL_API_KEY },
+    body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, stream: false }),
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!r.ok) return null;
+  const d = await r.json();
+  return d.choices?.[0]?.message?.content || null;
+}
+
 async function webSearch(query) {
   try {
-    const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + process.env.MISTRAL_API_KEY },
-      body: JSON.stringify({
-        model: "mistral-small-latest",
-        messages: [
-          { role: "system", content: "You are a search assistant. When given a query, provide 5 relevant results in JSON format like: [{\"title\":\"...\",\"url\":\"...\",\"snippet\":\"...\"}]. Return ONLY the JSON array, no extra text." },
-          { role: "user", content: "Search for: " + query }
-        ],
-        temperature: 0.3, max_tokens: 800
-      }),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) return null;
-    const data = await r.json();
-    const text = data.choices?.[0]?.message?.content || "";
-    const match = text.match(/\[[\s\S]*\]/);
-    if (!match) return null;
-    return JSON.parse(match[0]).slice(0, 5);
+    const res = await callMistral([
+      { role:"system", content:'Return ONLY a JSON array of 5 web search results for the query. Format: [{"title":"...","url":"https://...","snippet":"..."}]. No extra text.' },
+      { role:"user", content:"Search: " + query }
+    ], "mistral-small-latest", 0.2, 600);
+    const match = res?.match(/\[[\s\S]*\]/);
+    return match ? JSON.parse(match[0]).slice(0,5) : null;
   } catch { return null; }
 }
 
-// ── IMAGE GENERATION via Mistral ──────────────────────────────
 async function generateImage(prompt) {
-  // Mistral يولد وصفاً تفصيلياً للصورة ثم نعيده كـ SVG فني
   try {
-    const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + process.env.MISTRAL_API_KEY },
-      body: JSON.stringify({
-        model: "mistral-large-latest",
-        messages: [
-          { role: "system", content: "You are an SVG artist. Create a beautiful, detailed SVG image based on the user's description. Return ONLY the SVG code starting with <svg and ending with </svg>. Make it colorful, artistic, and detailed with gradients, shapes, and visual elements. Width: 512, Height: 512." },
-          { role: "user", content: "Create an SVG image of: " + prompt }
-        ],
-        temperature: 0.8, max_tokens: 2000
-      }),
-      signal: AbortSignal.timeout(30000)
-    });
-    if (!r.ok) return null;
-    const data = await r.json();
-    const text = data.choices?.[0]?.message?.content || "";
-    const svgMatch = text.match(/<svg[\s\S]*<\/svg>/i);
-    if (!svgMatch) return null;
-    const svgB64 = Buffer.from(svgMatch[0]).toString("base64");
-    return "data:image/svg+xml;base64," + svgB64;
+    const svg = await callMistral([
+      { role:"system", content:"You are an SVG artist. Create a beautiful, detailed, colorful SVG (512x512) based on the description. Return ONLY the SVG code starting with <svg and ending with </svg>. Use gradients, shapes, and visual elements." },
+      { role:"user", content:"Create SVG of: " + prompt }
+    ], "mistral-large-latest", 0.8, 2000);
+    const m = svg?.match(/<svg[\s\S]*<\/svg>/i);
+    if (!m) return null;
+    return "data:image/svg+xml;base64," + Buffer.from(m[0]).toString("base64");
   } catch { return null; }
 }
 
-// ── IMAGE GENERATION ROUTE ────────────────────────────────────
+// ── IMAGE GENERATION ──────────────────────────────────────────
 app.post("/api/generate-image", requireAuth, chatLimiter, async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error_ar: "أدخل وصف الصورة" });
-  const db = loadDB();
-  const u  = db.users[req.user.user_id];
+  const u = await User.findById(req.user.user_id).lean();
   if (!u) return res.status(404).json({ error_ar: "غير موجود" });
   const usage = checkUsage(u);
-  if (!usage.images_ok) return res.status(429).json({
-    error_ar: `وصلت لحد الصور (${usage.images.limit}/يوم). يتجدد بعد ${Math.ceil(usage.reset_in)} ساعة`
-  });
+  if (!usage.images_ok) return res.status(429).json({ error_ar: `وصلت لحد الصور (${usage.images.limit}/يوم)` });
   const img = await generateImage(sanitize(prompt, 500));
-  if (!img) return res.status(503).json({ error_ar: "فشل توليد الصورة، حاول مجدداً" });
-  // Increment counter
-  u.daily_images_used = (u.daily_images_used || 0) + 1;
-  saveDB(db);
-  res.json({ image: img, remaining_images: usage.images.limit - u.daily_images_used });
+  if (!img) return res.status(503).json({ error_ar: "فشل التوليد، حاول مجدداً" });
+  await User.findByIdAndUpdate(req.user.user_id, { $inc: { daily_images_used: 1 } });
+  res.json({ image: img });
 });
 
 // ── CHAT STREAM ───────────────────────────────────────────────
@@ -669,250 +516,151 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
   const { conv_id, message, images, documents, use_search, deep } = req.body;
   const msg = sanitize(message || "", 8000);
   const cid = sanitize(conv_id || "", 50);
-
   if (!cid || !msg) return res.status(400).json({ error_ar: "بيانات ناقصة" });
 
-  const db  = loadDB();
-  const u   = db.users[req.user.user_id];
+  const u = await User.findById(req.user.user_id).lean();
   if (!u || u.is_banned) return res.status(403).json({ error_ar: "غير مصرح" });
 
-  const usage = checkUsage(u);
-  const lim   = getUserLimits(u, db.settings || {});
+  const usage  = checkUsage(u);
+  const limits = getUserLimits(u);
 
   if (msg.length > 8000) return res.status(400).json({ error_ar: "الرسالة طويلة جداً" });
   const wc = msg.trim().split(/\s+/).filter(Boolean).length;
-  if (wc > lim.max_words) return res.status(429).json({ error_ar: `تجاوزت حد ${lim.max_words} كلمة` });
+  if (wc > limits.max_words) return res.status(429).json({ error_ar: `تجاوزت حد ${limits.max_words} كلمة` });
+  if (u.last_msg_ts && Date.now() - u.last_msg_ts < 1500) return res.status(429).json({ error_ar: "انتظر قليلاً" });
+
+  // Check limit — show subscription message
   if (!usage.msgs_ok) {
-    const subMsg = `عزيزي المستخدم،
-
-لقد انتهت فترتك التجريبية المجانية.
-
-يمكنك الآن الاشتراك في **MedTerm AI** — مساعدك الذكي المربوط بالذكاء الاصطناعي.
-
-**✨ مميزات الاشتراك:**
-1. بحث دقيق وإجابات موثوقة
-2. مرتبط بأقوى نماذج الذكاء الاصطناعي
-3. رسائل وصور بدون حدود
-4. يعمل حتى مع الإنترنت الضعيف
-
-**💰 السعر: 5 شيكل فقط / شهر**
-أرخص بـ 20 مرة من باقي أدوات الذكاء الاصطناعي!
-
-**طرق الدفع:**
-
-**بال باي أو جوال باي:**
-الرقم: 0597111855
-باسم: إياد معروف
-
-بعد التحويل راسل المهندس نادر:
-📱 [+972 59-385-0520](https://wa.me/972593850520)
-
-_يتجدد الحد المجاني بعد ${Math.ceil(usage.reset_in)} ساعة_`;
-
-    return res.status(429).json({
-      error_ar: subMsg,
-      is_subscription_msg: true,
-      reset_in: usage.reset_in
-    });
-  }
-  if (u.last_msg_ts && Date.now() - u.last_msg_ts < 1500) return res.status(429).json({ error_ar: "انتظر قبل الإرسال" });
-
-  // Auto-create conversation if not exists
-  if (!u.conversations) u.conversations = {};
-  if (!u.conversations[cid]) {
-    u.conversations[cid] = { id: cid, title: msg.slice(0, 45), created: now(), last_msg: now(), messages: [], archived: false };
-    saveDB(db);
+    const subMsg = `عزيزي المستخدم،\n\nلقد انتهت فترتك التجريبية المجانية.\n\n**✨ اشترك الآن في MedTerm AI**\n\n**مميزات الاشتراك VIP:**\n- 200 رسالة يومياً\n- 50 صورة يومياً\n- بحث دقيق وذكي\n- بدون حدود عملية\n\n**💰 السعر: 5 شيكل فقط / شهر**\n\n**طرق الدفع:**\nبال باي أو جوال باي\nالرقم: 0597111855\nباسم: إياد معروف\n\nبعد التحويل راسل المهندس نادر:\n📱 [+972 59-385-0520](https://wa.me/972593850520)\n\n_يتجدد الحد المجاني بعد ${Math.ceil(usage.reset_in)} ساعة_`;
+    return res.status(429).json({ error_ar: subMsg, is_subscription_msg: true, reset_in: usage.reset_in });
   }
 
-  const conv = u.conversations?.[cid];
-  if (!conv) return res.status(404).json({ error_ar: "المحادثة غير موجودة" });
+  // Auto-create conversation
+  let conv = u.conversations?.[cid];
+  if (!conv) {
+    conv = { id:cid, title:msg.slice(0,45), created:now(), last_msg:now(), messages:[], archived:false };
+    await User.findByIdAndUpdate(req.user.user_id, { [`conversations.${cid}`]: conv });
+  }
 
-  // Validate images with plan limit
+  // Validate images
   let safeImgs = [];
   if (Array.isArray(images) && images.length > 0) {
-    if (!usage.images_ok) return res.status(429).json({
-      error_ar: `وصلت لحد الصور اليومي (${usage.images.limit}). يتجدد بعد ${Math.ceil(usage.reset_in)} ساعة`
-    });
-    for (const img of images.slice(0, 3)) {
-      if (typeof img !== "string" || !img.startsWith("data:image/")) continue;
-      if (img.length * 0.75 > lim.max_file_mb * 1024 * 1024) continue;
+    if (!usage.images_ok) return res.status(429).json({ error_ar: `وصلت لحد الصور (${usage.images.limit}/يوم)` });
+    for (const img of images.slice(0,3)) {
+      if (typeof img!=="string" || !img.startsWith("data:image/")) continue;
+      if (img.length * 0.75 > limits.max_file_mb * 1024 * 1024) continue;
       safeImgs.push(img);
     }
   }
 
-  // Validate & extract docs with plan limit
+  // Extract docs
   let safeDocs = [];
-  if (Array.isArray(documents)) {
-    for (const doc of documents.slice(0, 3)) {
+  if (Array.isArray(documents) && documents.length > 0) {
+    if (!usage.files_ok) return res.status(429).json({ error_ar: `وصلت لحد الملفات (${usage.files.limit}/يوم)` });
+    for (const doc of documents.slice(0,3)) {
       if (!doc?.data || typeof doc.data !== "string") continue;
-      if (doc.data.length * 0.75 > 10 * 1024 * 1024) continue;
-
-      let extractedText = null;
-      const mimeType = doc.type || "";
-      const name = doc.name || "file";
-
+      if (doc.data.length * 0.75 > limits.max_file_mb * 1024 * 1024) continue;
       try {
         const base64 = doc.data.includes(",") ? doc.data.split(",")[1] : doc.data;
         const buffer = Buffer.from(base64, "base64");
-
-        if (mimeType.includes("text") || name.match(/\.(txt|md|csv|json|js|py|html|css|xml|yaml|yml|sh|sql)$/i)) {
-          // Text files — read directly
-          extractedText = buffer.toString("utf8").slice(0, 12000);
-        } else if (name.match(/\.csv$/i)) {
-          // CSV — format nicely
-          extractedText = buffer.toString("utf8").slice(0, 8000);
+        const name   = doc.name || "file";
+        let text = null;
+        if (doc.type?.includes("text") || name.match(/\.(txt|md|csv|json|js|py|html|css|xml|sh|sql)$/i)) {
+          text = buffer.toString("utf8").slice(0, 12000);
         } else if (name.match(/\.json$/i)) {
-          // JSON — parse and format
-          try {
-            const parsed = JSON.parse(buffer.toString("utf8"));
-            extractedText = JSON.stringify(parsed, null, 2).slice(0, 8000);
-          } catch { extractedText = buffer.toString("utf8").slice(0, 8000); }
-        } else if (mimeType.includes("pdf") || name.match(/\.pdf$/i)) {
-          // PDF — extract readable text (basic)
+          try { text = JSON.stringify(JSON.parse(buffer.toString("utf8")), null, 2).slice(0, 8000); } catch { text = buffer.toString("utf8").slice(0, 8000); }
+        } else if (name.match(/\.pdf$/i)) {
           const raw = buffer.toString("latin1");
-          const textMatches = raw.match(/BT[\s\S]*?ET/g) || [];
-          const pdfText = textMatches.map(block => {
-            const tjMatch = block.match(/\(([^)]+)\)\s*Tj/g) || [];
-            return tjMatch.map(t => t.replace(/\(([^)]+)\)\s*Tj/, "$1")).join(" ");
-          }).join("\n").replace(/[^\x20-\x7E\u0600-\u06FF\n]/g," ").replace(/\s+/g," ").trim().slice(0, 8000);
-          extractedText = pdfText.length > 50 ? pdfText : "PDF content (binary — please describe what you need from this document)";
+          const blocks = (raw.match(/BT[\s\S]*?ET/g) || []);
+          const pdfText = blocks.map(b => (b.match(/\(([^)]+)\)\s*Tj/g)||[]).map(t=>t.replace(/\(([^)]+)\)\s*Tj/,"$1")).join(" ")).join("\n")
+            .replace(/[^\x20-\x7E\u0600-\u06FF\n]/g," ").replace(/\s+/g," ").trim().slice(0, 8000);
+          text = pdfText.length > 50 ? pdfText : `محتوى PDF (${name}) — اسألني عن محتوى الملف`;
         } else {
-          // Other — try as UTF-8 text
           const raw = buffer.toString("utf8").replace(/[^\x20-\x7E\u0600-\u06FF\n\t]/g," ").replace(/\s+/g," ").trim();
-          extractedText = raw.length > 20 ? raw.slice(0, 8000) : null;
+          text = raw.length > 20 ? raw.slice(0, 8000) : null;
         }
-      } catch { extractedText = null; }
-
-      if (extractedText) {
-        safeDocs.push({
-          name,
-          text: `=== File: ${name} ===\n${extractedText}\n=== End of ${name} ===`
-        });
-      }
+        if (text) safeDocs.push({ name, text: `=== ${name} ===\n${text}\n=== نهاية ${name} ===` });
+      } catch {}
     }
   }
 
-  // Save user message
-  conv.messages.push({ role:"user", content:msg, has_image:safeImgs.length>0, has_doc:safeDocs.length>0, ts:now() });
-  if (conv.messages.filter(m=>m.role==="user").length===1) conv.title = msg.slice(0, 45);
-  conv.last_msg = now();
-  u.last_msg_ts = Date.now();
-  if (u.usage_date !== today()) { u.daily_used = 0; u.usage_date = today(); }
-  u.daily_used++;
-  saveDB(db);
-
+  // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
-
-  const send = (data) => res.write("data: " + JSON.stringify(data) + "\n\n");
+  const send = d => res.write("data: " + JSON.stringify(d) + "\n\n");
 
   // Web search
-  let searchBlock = "";
-  let searchResults = null;
+  let searchBlock = "", searchResults = null;
   if (use_search) {
-    send({ status: u.lang === "en" ? "🔍 Searching the web..." : "🔍 جاري البحث في الإنترنت..." });
+    send({ status: u.lang==="en" ? "🔍 Searching..." : "🔍 جاري البحث..." });
     searchResults = await webSearch(msg);
     if (searchResults?.length) {
-      searchBlock = "\n\n[Search Results]\n" + searchResults.map((r,i) => `${i+1}. ${r.title}\n${r.snippet}\nSource: ${r.url}`).join("\n\n");
-      send({ status: u.lang === "en" ? `✅ Found ${searchResults.length} results` : `✅ ${searchResults.length} نتائج` });
+      searchBlock = "\n\n[Search Results]\n" + searchResults.map((r,i)=>`${i+1}. ${r.title}\n${r.snippet}\n${r.url}`).join("\n\n");
+      send({ status: u.lang==="en" ? `✅ ${searchResults.length} results` : `✅ ${searchResults.length} نتائج` });
     }
   }
 
   // Memory
-  const memShort = Object.entries(u.memory || {}).map(([k,v]) => k+": "+v).join("\n");
-  const memLong  = (u.long_memory || []).slice(-10).map(m => "- "+m).join("\n");
-  const memBlock = (memShort || memLong) ? "\n\n[User Memory]\n" + memShort + (memLong ? "\n" + memLong : "") : "";
+  const memShort = Object.entries(u.memory||{}).map(([k,v])=>k+": "+v).join("\n");
+  const memLong  = (u.long_memory||[]).slice(-8).map(m=>"- "+m).join("\n");
+  const memBlock = (memShort||memLong) ? "\n\n[User Memory]\n"+memShort+(memLong?"\n"+memLong:"") : "";
 
   // System prompt
   const lang = u.lang || "ar";
   const PERSONALITIES = {
-    precise:  {
-      ar: `أنت MedTerm AI، مساعد ذكاء اصطناعي متقدم ودقيق جداً.
-قواعد الإجابة:
-- أجب بشكل متوسط الطول: دقيق وشامل وليس طويلاً جداً
-- استخدم النقاط والعناوين عند الحاجة فقط
-- لا تكرر السؤال ولا تقدم مقدمات طويلة
-- ابدأ الإجابة مباشرة
-- كن دقيقاً في المعلومات وتحقق من صحتها
-- إذا لم تعرف شيئاً قل ذلك بوضوح`,
-      en: `You are MedTerm AI, an advanced and highly accurate assistant.
-Rules:
-- Give medium-length answers: precise, complete, not too long
-- Use bullet points and headers only when needed
-- Never repeat the question or give long intros
-- Start the answer directly
-- Be accurate and fact-checked
-- If you don't know something, say so clearly`
+    precise: {
+      ar: `أنت MedTerm AI، مساعد ذكاء اصطناعي دقيق ومتقدم.\nقواعد الإجابة:\n- ابدأ الإجابة مباشرة بدون مقدمات\n- ردود متوسطة الطول: دقيقة وشاملة وليست طويلة جداً\n- استخدم النقاط والعناوين فقط عند الحاجة\n- كن دقيقاً 100% في المعلومات\n- إذا لم تعرف شيئاً قل ذلك`,
+      en: `You are MedTerm AI, a precise and advanced assistant.\nRules:\n- Start the answer directly, no preamble\n- Medium-length: precise, complete, not too long\n- Use bullet points/headers only when needed\n- Be 100% accurate\n- If unsure, say so`
     },
     friendly: {
-      ar: `أنت MedTerm AI، مساعد ذكي وودود.
-- أجب بأسلوب دافئ وواضح
-- ردود متوسطة الطول — دقيقة وشاملة
-- ابدأ مباشرة بدون مقدمات طويلة`,
-      en: `You are MedTerm AI, a friendly smart assistant.
-- Answer in a warm, clear style
-- Medium-length answers — precise and complete
-- Start directly without long introductions`
+      ar: `أنت MedTerm AI، مساعد ذكي وودود.\n- ابدأ مباشرة بدون مقدمات طويلة\n- ردود متوسطة ودقيقة`,
+      en: `You are MedTerm AI, friendly and smart.\n- Start directly\n- Medium, precise answers`
     },
     concise: {
-      ar: `أنت MedTerm AI، مساعد مختصر ودقيق.
-- أجوبة قصيرة ومباشرة جداً
-- النقطة الأساسية فقط بدون حشو
-- دقيق 100%`,
-      en: `You are MedTerm AI, a concise and accurate assistant.
-- Very short and direct answers
-- Key point only, no filler
-- 100% accurate`
+      ar: `أنت MedTerm AI، مساعد مختصر ودقيق.\n- أجوبة قصيرة ومباشرة\n- النقطة الأساسية فقط\n- دقيق 100%`,
+      en: `You are MedTerm AI, concise and accurate.\n- Short, direct answers\n- Key point only\n- 100% accurate`
     }
   };
   const pers = PERSONALITIES[u.personality] || PERSONALITIES.precise;
-  const langInstr = lang === "en" ? "Reply in English." : lang === "ar" ? "رد باللغة العربية." : "Reply in the same language the user uses.";
-  const sysPrompt = (pers[lang] || pers.ar) + " " + langInstr + memBlock + searchBlock;
+  const langInstr = lang==="en" ? "Reply in English." : "رد باللغة العربية.";
+  const sysPrompt = (pers[lang]||pers.ar) + "\n" + langInstr + memBlock + searchBlock;
+  const deepInstr = deep ? "\n\nفكّر خطوة بخطوة بشكل مختصر ثم أجب." : "";
 
   const model = safeImgs.length > 0 ? "pixtral-12b-2409" : "mistral-large-latest";
-  const history = conv.messages.slice(-13, -1);
-
-  const deepInstruction = deep ? "\n\nTHINK DEEPLY: Before answering, show your step-by-step reasoning briefly, then give the complete answer." : "";
-  const finalSysPrompt = sysPrompt + deepInstruction;
-
-  // Build messages
-  const mistralMsgs = [{ role: "system", content: finalSysPrompt }];
-  history.forEach(m => mistralMsgs.push({ role: m.role, content: m.content }));
+  const history = (conv.messages || []).slice(-12);
+  const mistralMsgs = [{ role:"system", content:sysPrompt + deepInstr }];
+  history.forEach(m => mistralMsgs.push({ role:m.role, content:m.content }));
 
   if (safeImgs.length > 0) {
-    const docBlock = safeDocs.length ? "\n\n" + safeDocs.map(d => d.text).join("\n\n") : "";
-    const parts = [{ type: "text", text: msg + docBlock }];
-    safeImgs.forEach(img => parts.push({ type: "image_url", image_url: { url: img } }));
-    mistralMsgs.push({ role: "user", content: parts });
+    const parts = [{ type:"text", text: msg + (safeDocs.length ? "\n\n" + safeDocs.map(d=>d.text).join("\n\n") : "") }];
+    safeImgs.forEach(img => parts.push({ type:"image_url", image_url:{ url:img } }));
+    mistralMsgs.push({ role:"user", content:parts });
   } else {
-    const docBlock = safeDocs.length
-      ? "\n\n" + safeDocs.map(d => d.text).join("\n\n") + "\n\n---\nUser question about the file(s) above: " + msg
-      : msg;
-    mistralMsgs.push({ role: "user", content: docBlock });
+    const docBlock = safeDocs.length ? "\n\n" + safeDocs.map(d=>d.text).join("\n\n") + "\n\n---\nالسؤال: " + msg : msg;
+    mistralMsgs.push({ role:"user", content:docBlock });
   }
 
-  send({ status: u.lang === "en" ? "🤖 Thinking..." : "🤖 جاري التفكير..." });
+  send({ status: u.lang==="en" ? "🤖 Thinking..." : "🤖 جاري التفكير..." });
 
   try {
     const apiRes = await fetch("https://api.mistral.ai/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + process.env.MISTRAL_API_KEY },
-      body: JSON.stringify({ model, messages: mistralMsgs, temperature: deep ? 0.2 : 0.3, max_tokens: lim.max_tokens, stream: true }),
+      headers: { "Content-Type":"application/json", "Authorization":"Bearer "+process.env.MISTRAL_API_KEY },
+      body: JSON.stringify({ model, messages:mistralMsgs, temperature:deep?0.2:0.3, max_tokens:limits.max_tokens, stream:true }),
       signal: AbortSignal.timeout(90000)
     });
 
     if (!apiRes.ok) {
-      const e = await apiRes.json().catch(() => ({}));
-      send({ error: e.message || "Mistral API error" }); return res.end();
+      const e = await apiRes.json().catch(()=>({}));
+      send({ error: e.message || "Mistral error" }); return res.end();
     }
 
     let fullReply = "";
     for await (const chunk of apiRes.body) {
-      const lines = chunk.toString().split("\n").filter(l => l.startsWith("data: "));
-      for (const line of lines) {
+      for (const line of chunk.toString().split("\n").filter(l=>l.startsWith("data: "))) {
         const raw = line.slice(6).trim();
-        if (raw === "[DONE]") continue;
+        if (raw==="[DONE]") continue;
         try {
           const j = JSON.parse(raw);
           const delta = j.choices?.[0]?.delta?.content || "";
@@ -922,340 +670,179 @@ Rules:
     }
 
     const tokens = Math.ceil((msg.length + fullReply.length) / 3);
-    const db2 = loadDB();
-    const u2  = db2.users[req.user.user_id];
-    const c2  = u2?.conversations?.[cid];
 
-    if (c2) {
-      c2.messages.push({ role: "assistant", content: fullReply, tokens, model, deep: !!deep, ts: now() });
-      u2.total_msgs   = (u2.total_msgs || 0) + 1;
-      u2.total_tokens = (u2.total_tokens || 0) + tokens;
-      // Update plan usage counters
-      u2.daily_msgs_used   = (u2.daily_msgs_used   || 0) + 1;
-      if (safeImgs.length > 0) u2.daily_images_used = (u2.daily_images_used || 0) + safeImgs.length;
-      if (safeDocs.length > 0) u2.daily_files_used  = (u2.daily_files_used  || 0) + safeDocs.length;
-    }
+    // Save to MongoDB
+    const newMsg = { role:"user", content:msg, has_image:safeImgs.length>0, ts:now() };
+    const aiMsg  = { role:"assistant", content:fullReply, tokens, model, deep:!!deep, ts:now() };
+    const title  = conv.messages?.length === 0 ? msg.slice(0,45) : conv.title;
 
-    // Extract memory
-    if (!u2.memory) u2.memory = {};
+    const update = {
+      [`conversations.${cid}.messages`]: [...(conv.messages||[]), newMsg, aiMsg],
+      [`conversations.${cid}.last_msg`]: now(),
+      [`conversations.${cid}.title`]: title,
+      last_active: now(),
+      last_msg_ts: Date.now(),
+      $inc: {
+        total_msgs: 1,
+        total_tokens: tokens,
+        daily_msgs_used: 1,
+        ...(safeImgs.length > 0 ? { daily_images_used: safeImgs.length } : {}),
+        ...(safeDocs.length > 0 ? { daily_files_used: safeDocs.length } : {})
+      }
+    };
+
+    // Extract short memory
+    const uCurrent = await User.findById(req.user.user_id).lean();
     const memPatterns = [
-      { r: /my name is (\w+)/i, k: "name" },
-      { r: /i(?:'m| am) from ([\w\s]+)/i, k: "country" },
-      { r: /i(?:'m| am) (\d+) years/i, k: "age" },
-      { r: /اسمي\s+([\u0600-\u06FF\w]+)/, k: "name" },
-      { r: /(?:أنا من|من)\s+([\u0600-\u06FF\w]+)/, k: "country" },
-      { r: /عمري\s+(\d+)/, k: "age" },
-      { r: /أحب\s+([\u0600-\u06FF\w\s]{3,30})/, k: "interests" }
+      { r:/my name is (\w+)/i, k:"name" }, { r:/اسمي\s+([\u0600-\u06FF\w]+)/, k:"name" },
+      { r:/i(?:'m| am) from ([\w\s]+)/i, k:"country" }, { r:/(?:أنا من|من)\s+([\u0600-\u06FF\w]+)/, k:"country" },
+      { r:/i(?:'m| am) (\d+) years/i, k:"age" }, { r:/عمري\s+(\d+)/, k:"age" }
     ];
-    memPatterns.forEach(({ r, k }) => { const m = msg.match(r); if (m) u2.memory[k] = sanitize(m[1], 50); });
+    const memUpdates = {};
+    memPatterns.forEach(({ r, k }) => { const m = msg.match(r); if(m) memUpdates[`memory.${k}`] = sanitize(m[1],50); });
+    Object.assign(update, memUpdates);
 
     // Long memory
-    if (!u2.long_memory) u2.long_memory = [];
     if (msg.length > 30 && fullReply.length > 80) {
-      u2.long_memory.push(`[${new Date().toLocaleDateString()}] Q: ${msg.slice(0, 60)} → ${fullReply.slice(0, 100)}`);
-      if (u2.long_memory.length > 50) u2.long_memory = u2.long_memory.slice(-50);
+      const longMem = [...(uCurrent?.long_memory||[]), `[${new Date().toLocaleDateString()}] ${msg.slice(0,60)} → ${fullReply.slice(0,100)}`].slice(-50);
+      update.long_memory = longMem;
     }
 
-    // Training data
-    db2.training.push({ user_id: req.user.user_id, username: req.user.username, user_msg: msg, assistant_msg: fullReply, model, tokens, deep: !!deep, lang, ts: now() });
-    logEvent(db2, "chat", { username: req.user.username, tokens, deep: !!deep });
-    saveDB(db2);
+    await User.findByIdAndUpdate(req.user.user_id, update);
 
-    send({ done: true, tokens, remaining: lim.daily_msgs - (u2.daily_used || 0), sources: searchResults?.map(r => ({ title: r.title, url: r.url })) });
+    // Save training
+    await Training.create({ user_id:req.user.user_id, username:req.user.username, user_msg:msg, assistant_msg:fullReply, model, tokens, deep:!!deep, lang });
+    await logEvent("chat", { username:req.user.username, tokens });
+
+    send({ done:true, tokens, sources: searchResults?.map(r=>({ title:r.title, url:r.url })) });
     res.end();
 
   } catch (e) {
-    send({ error: e.name === "TimeoutError" ? "انتهت المهلة" : "خطأ في الاتصال" });
+    send({ error: e.name==="TimeoutError" ? "انتهت المهلة" : "خطأ في الاتصال" });
     res.end();
   }
 });
 
 // ── STATS ─────────────────────────────────────────────────────
-app.get("/api/stats", requireAuth, (req, res) => {
-  const db = loadDB(), u = db.users[req.user.user_id];
+app.get("/api/stats", requireAuth, async (req, res) => {
+  const u = await User.findById(req.user.user_id).lean();
   if (!u) return res.status(404).json({ error_ar: "غير موجود" });
-  const lim = checkDailyLimit(u, db.settings || {});
+  const usage  = checkUsage(u);
+  const convs  = Object.values(u.conversations||{}).filter(c=>!c.archived).length;
+  const train  = await Training.countDocuments({ user_id: req.user.user_id });
   res.json({
-    total_msgs: u.total_msgs || 0, total_tokens: u.total_tokens || 0,
-    conversations: Object.values(u.conversations || {}).filter(c => !c.archived).length,
-    daily_used: lim.used, daily_limit: lim.limit,
-    training_pairs: db.training.filter(t => t.user_id === req.user.user_id).length,
-    memory_count: (u.long_memory || []).length, version: APP_VERSION
+    total_msgs:u.total_msgs||0, total_tokens:u.total_tokens||0,
+    conversations:convs, daily_used:usage.msgs.used, daily_limit:usage.msgs.limit,
+    training_pairs:train, memory_count:(u.long_memory||[]).length, version:APP_VERSION
   });
 });
 
-// ── ADMIN ROUTES ──────────────────────────────────────────────
-app.get("/api/admin/dashboard", requireAuth, requireAdmin, (req, res) => {
-  const db = loadDB();
-  const users = Object.values(db.users);
-  const s = db.settings || {};
-  const totalMsgs   = users.reduce((a,u) => a + (u.total_msgs||0), 0);
-  const totalTokens = users.reduce((a,u) => a + (u.total_tokens||0), 0);
-  const todayUsage  = users.reduce((a,u) => a + (u.usage_date===today()?(u.daily_used||0):0), 0);
-  const act = {};
-  db.training.forEach(t => { const d=t.ts?.slice(0,10); if(d) act[d]=(act[d]||0)+1; });
-  const modelUsage = {};
-  db.training.forEach(t => { modelUsage[t.model]=(modelUsage[t.model]||0)+1; });
-  res.json({
-    overview: {
-      totalUsers: users.length, activeToday: users.filter(u=>u.last_active?.slice(0,10)===today()).length,
-      activeWeek: users.filter(u=>Date.now()-new Date(u.last_active||0)<7*86400000).length,
-      adminCount: users.filter(u=>u.role==="admin").length,
-      bannedCount: users.filter(u=>u.is_banned).length,
-      totalMsgs, totalTokens, totalTraining: db.training.length, todayUsage,
-      pendingReports: (db.reports||[]).filter(r=>r.status==="pending").length
-    },
-    settings: s,
-    topUsers: users.sort((a,b)=>(b.total_msgs||0)-(a.total_msgs||0)).slice(0,10)
-      .map(u=>({ username:u.username, role:u.role, total_msgs:u.total_msgs||0, total_tokens:u.total_tokens||0, created:u.created, last_active:u.last_active, is_banned:u.is_banned })),
-    activity: Object.entries(act).sort().slice(-14).map(([day,count])=>({day,count})),
-    recentEvents: (db.events||[]).slice(-100).reverse(),
-    modelUsage, reports: (db.reports||[]).slice(-20).reverse(),
-    version: APP_VERSION
-  });
+// ── EXPORT ────────────────────────────────────────────────────
+app.get("/api/export/html/:conv_id", requireAuth, async (req, res) => {
+  const u = await User.findById(req.user.user_id).select("conversations").lean();
+  const cid = sanitize(req.params.conv_id);
+  const conv = u?.conversations?.[cid];
+  if (!conv) return res.status(404).json({ error_ar: "غير موجود" });
+  const msgs = (conv.messages||[]).map(m=>`<div style="margin:12px 0;padding:10px 14px;background:${m.role==="user"?"#eef2ff":"#f9fafb"};border-radius:9px;direction:rtl;font-family:Arial"><strong>${m.role==="user"?"أنت":"MedTerm"}</strong><div style="margin-top:5px;white-space:pre-wrap">${(m.content||"").replace(/</g,"&lt;")}</div><small style="color:#999">${m.ts||""}</small></div>`).join("");
+  res.setHeader("Content-Type","text/html;charset=utf-8");
+  res.setHeader("Content-Disposition","attachment; filename=chat.html");
+  res.send(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"/><title>${conv.title}</title></head><body style="max-width:800px;margin:0 auto;padding:20px"><h1 style="color:#3b82f6">${conv.title}</h1>${msgs}</body></html>`);
 });
 
-app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
-  const db = loadDB();
-  res.json({ users: Object.values(db.users).map(u => ({
-    id: u.id, username: u.username, role: u.role,
-    total_msgs: u.total_msgs||0, total_tokens: u.total_tokens||0,
-    daily_used: u.usage_date===today()?(u.daily_used||0):0,
-    daily_limit: getUserLimits(u, db.settings||{}).daily_msgs,
-    max_words: getUserLimits(u, db.settings||{}).max_words,
-    created: u.created, last_active: u.last_active,
-    is_banned: u.is_banned||false, ban_reason: u.ban_reason||"",
-    custom_daily_msgs: u.custom_daily_msgs, custom_max_words: u.custom_max_words,
-    notes: u.notes||""
-  })), total: Object.keys(db.users).length });
-});
-
-// Update user (admin full control)
-app.put("/api/admin/users/:username", requireAuth, requireAdmin, (req, res) => {
-  const db = loadDB();
-  const u  = Object.values(db.users).find(x => x.username === req.params.username);
-  if (!u) return res.status(404).json({ error_ar: "المستخدم غير موجود" });
-  if (u.username === req.user.username && req.body.role === "user")
-    return res.status(400).json({ error_ar: "لا يمكنك تخفيض نفسك" });
-
-  const { role, is_banned, ban_reason, custom_daily_msgs, custom_max_words, custom_max_tokens, notes, reset_limit } = req.body;
-  if (role && ["user","admin"].includes(role)) u.role = role;
-  if (typeof is_banned === "boolean") u.is_banned = is_banned;
-  if (ban_reason !== undefined) u.ban_reason = sanitize(ban_reason, 200);
-  if (custom_daily_msgs !== undefined) u.custom_daily_msgs = custom_daily_msgs === null ? null : parseInt(custom_daily_msgs)||null;
-  if (custom_max_words !== undefined) u.custom_max_words = custom_max_words === null ? null : parseInt(custom_max_words)||null;
-  if (custom_max_tokens !== undefined) u.custom_max_tokens = custom_max_tokens === null ? null : parseInt(custom_max_tokens)||null;
-  if (notes !== undefined) u.notes = sanitize(notes, 500);
-  if (reset_limit) { u.daily_used = 0; u.usage_date = today(); }
-
-  logEvent(db, "admin_user_update", { by: req.user.username, target: u.username, changes: req.body });
-  saveDB(db); res.json({ ok: true });
-});
-
-app.delete("/api/admin/users/:username", requireAuth, requireAdmin, (req, res) => {
-  const db = loadDB();
-  const u  = Object.values(db.users).find(x => x.username === req.params.username);
-  if (!u) return res.status(404).json({ error_ar: "غير موجود" });
-  if (u.username === req.user.username) return res.status(400).json({ error_ar: "لا يمكنك حذف نفسك" });
-  delete db.users[u.id];
-  // Invalidate sessions
-  const sessions = loadSessions();
-  Object.keys(sessions).forEach(k => { if (sessions[k].user_id === u.id) delete sessions[k]; });
-  saveSessions(sessions);
-  logEvent(db, "user_deleted", { by: req.user.username, target: u.username });
-  saveDB(db); res.json({ ok: true });
-});
-
-// Global settings update
-app.put("/api/admin/settings", requireAuth, requireAdmin, (req, res) => {
-  const db = loadDB();
-  if (!db.settings) db.settings = {};
-  const {
-    max_users, registration_open, default_daily_msgs, default_max_words, default_max_tokens,
-    admin_daily_msgs, admin_max_words, maintenance_mode, maintenance_msg
-  } = req.body;
-  if (max_users !== undefined)         db.settings.max_users         = parseInt(max_users)||100;
-  if (registration_open !== undefined) db.settings.registration_open = !!registration_open;
-  if (default_daily_msgs !== undefined)db.settings.default_daily_msgs= parseInt(default_daily_msgs)||30;
-  if (default_max_words !== undefined) db.settings.default_max_words = parseInt(default_max_words)||400;
-  if (default_max_tokens !== undefined)db.settings.default_max_tokens= parseInt(default_max_tokens)||1200;
-  if (admin_daily_msgs !== undefined)  db.settings.admin_daily_msgs  = parseInt(admin_daily_msgs)||999;
-  if (admin_max_words !== undefined)   db.settings.admin_max_words   = parseInt(admin_max_words)||4000;
-  if (maintenance_mode !== undefined)  db.settings.maintenance_mode  = !!maintenance_mode;
-  if (maintenance_msg !== undefined)   db.settings.maintenance_msg   = sanitize(maintenance_msg, 200);
-  logEvent(db, "settings_update", { by: req.user.username, settings: req.body });
-  saveDB(db); res.json({ ok: true, settings: db.settings });
-});
-
-// Reports
-app.get("/api/admin/reports", requireAuth, requireAdmin, (req, res) => {
-  const db = loadDB();
-  res.json({ reports: (db.reports||[]).slice().reverse() });
-});
-
-app.put("/api/admin/reports/:id", requireAuth, requireAdmin, (req, res) => {
-  const db = loadDB();
-  const r  = (db.reports||[]).find(x => x.id === req.params.id);
-  if (r) r.status = req.body.status || "resolved";
-  saveDB(db); res.json({ ok: true });
-});
-
-// Export training
-app.get("/api/admin/export-training", requireAuth, requireAdmin, (req, res) => {
-  const db   = loadDB();
-  const jsonl = db.training.map(r => JSON.stringify({
-    messages: [
-      { role: "system",    content: "You are MedTerm, an advanced AI assistant." },
-      { role: "user",      content: r.user_msg },
-      { role: "assistant", content: r.assistant_msg }
-    ]
-  })).join("\n");
-  res.setHeader("Content-Type", "application/jsonl");
-  res.setHeader("Content-Disposition", "attachment; filename=training.jsonl");
-  res.send(jsonl);
-});
-
-// Security logs (admin)
-app.get("/api/admin/security-log", requireAuth, requireAdmin, (req, res) => {
-  try {
-    const logs = fs.existsSync(LOG_FILE)
-      ? fs.readFileSync(LOG_FILE, "utf8").trim().split("\n").slice(-100).reverse().map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
-      : [];
-    res.json({ logs });
-  } catch { res.json({ logs: [] }); }
-});
-
-
-// ── STANDALONE ADMIN LOGIN ────────────────────────────────────
+// ── SUPERADMIN ────────────────────────────────────────────────
 const ADMIN_USER = process.env.ADMIN_USER || "medterm_admin";
-const ADMIN_PASS = process.env.ADMIN_PASS || "change_me_now";
+const ADMIN_PASS = process.env.ADMIN_PASS || "change_me";
 const adminTokens = new Map();
 
 app.post("/api/superadmin/login", loginLimiter, (req, res) => {
   const { username, password } = req.body;
   if (username !== ADMIN_USER || password !== ADMIN_PASS) {
-    secLog("SUPERADMIN_FAILED", { ip: req.ip });
-    return res.status(401).json({ error: "Invalid credentials" });
+    secLog("SUPERADMIN_FAIL", { ip: req.ip });
+    return res.status(401).json({ error: "Invalid" });
   }
-  const token = randToken();
-  adminTokens.set(token, { created: Date.now() });
-  setTimeout(() => adminTokens.delete(token), 3600000); // 1h expiry
+  const token = randTok();
+  adminTokens.set(token, Date.now());
+  setTimeout(() => adminTokens.delete(token), 3600000);
   res.json({ token });
 });
 
 function requireSuperAdmin(req, res, next) {
   const token = req.headers["x-admin-token"];
-  const sess  = token && adminTokens.get(token);
-  if (!sess || Date.now() - sess.created > 3600000) {
-    adminTokens.delete(token);
-    return res.status(401).json({ error: "Not authenticated" });
-  }
+  const t = token && adminTokens.get(token);
+  if (!t || Date.now() - t > 3600000) { adminTokens.delete(token); return res.status(401).json({ error:"Not authenticated" }); }
   next();
 }
 
-app.get("/api/superadmin/data", requireSuperAdmin, (req, res) => {
-  const db = loadDB();
-  const users = Object.values(db.users);
-  const totalMsgs   = users.reduce((a,u) => a+(u.total_msgs||0), 0);
-  const totalTokens = users.reduce((a,u) => a+(u.total_tokens||0), 0);
-  const todayUsage  = users.reduce((a,u) => a+(u.usage_date===today()?(u.daily_used||0):0), 0);
-  const act = {};
-  db.training.forEach(t => { const d=t.ts?.slice(0,10); if(d) act[d]=(act[d]||0)+1; });
+app.get("/api/superadmin/data", requireSuperAdmin, async (req, res) => {
+  const s = await getSettings();
+  const users = await User.find({}).select("-conversations -memory -long_memory -password_hash").lean();
+  const totalMsgs   = users.reduce((a,u)=>a+(u.total_msgs||0),0);
+  const totalTokens = users.reduce((a,u)=>a+(u.total_tokens||0),0);
+  const today = new Date().toISOString().slice(0,10);
+  const todayUsage  = users.reduce((a,u)=>a+(u.last_reset?.slice(0,10)===today?u.daily_msgs_used||0:0),0);
+  const act = await Training.aggregate([{ $group:{ _id:{ $dateToString:{format:"%Y-%m-%d",date:"$ts"} }, count:{$sum:1} } },{ $sort:{ _id:1 } },{ $limit:14 }]);
+  const reports  = await Report.find({}).sort({ ts:-1 }).limit(30).lean();
+  const events   = await Event.find({}).sort({ ts:-1 }).limit(50).lean();
   res.json({
-    overview: {
-      totalUsers: users.length, totalMsgs, totalTokens, totalTraining: db.training.length,
-      activeToday: users.filter(u=>u.last_active?.slice(0,10)===today()).length,
-      bannedCount: users.filter(u=>u.is_banned).length, todayUsage,
-      pendingReports: (db.reports||[]).filter(r=>r.status==="pending").length,
-      settings: db.settings || {}
-    },
-    users: users.map(u => ({
-      id:u.id, username:u.username, role:u.role,
-      total_msgs:u.total_msgs||0, total_tokens:u.total_tokens||0,
-      daily_used: u.usage_date===today()?(u.daily_used||0):0,
-      daily_limit: getUserLimits(u, db.settings||{}).daily_msgs,
-      is_banned:u.is_banned||false, ban_reason:u.ban_reason||"",
-      created:u.created, last_active:u.last_active,
-      custom_daily_msgs:u.custom_daily_msgs, custom_max_words:u.custom_max_words, notes:u.notes||""
-    })),
-    activity: Object.entries(act).sort().slice(-14).map(([day,count])=>({day,count})),
-    reports: (db.reports||[]).slice(-30).reverse(),
-    events: (db.events||[]).slice(-50).reverse()
+    overview: { totalUsers:users.length, totalMsgs, totalTokens, totalTraining:await Training.countDocuments(), activeToday:users.filter(u=>u.last_active?.slice(0,10)===today).length, bannedCount:users.filter(u=>u.is_banned).length, todayUsage, pendingReports:reports.filter(r=>r.status==="pending").length, settings:s },
+    users: users.map(u=>({ id:u._id, username:u.username, role:u.role, plan:u.plan||"free", total_msgs:u.total_msgs||0, total_tokens:u.total_tokens||0, daily_used:u.daily_msgs_used||0, daily_limit:getUserLimits(u).daily_msgs, is_banned:u.is_banned||false, ban_reason:u.ban_reason||"", created:u.created, last_active:u.last_active, custom_daily_msgs:u.custom_daily_msgs, custom_max_words:u.custom_max_words, notes:u.notes||"" })),
+    activity: act.map(a=>({ day:a._id, count:a.count })),
+    reports, events
   });
 });
 
-app.put("/api/superadmin/user/:username", requireSuperAdmin, (req, res) => {
-  const db = loadDB();
-  const u  = Object.values(db.users).find(x=>x.username===req.params.username);
-  if (!u) return res.status(404).json({ error:"Not found" });
-  const { role, is_banned, ban_reason, custom_daily_msgs, custom_max_words, reset_limit, notes, plan } = req.body;
-  if (role && ["user","admin"].includes(role)) u.role = role;
-  if (plan && ["free","pro"].includes(plan)) u.plan = plan;
-  if (typeof is_banned === "boolean") u.is_banned = is_banned;
-  if (ban_reason !== undefined) u.ban_reason = sanitize(ban_reason, 200);
-  if (custom_daily_msgs !== undefined) u.custom_daily_msgs = custom_daily_msgs===null?null:parseInt(custom_daily_msgs)||null;
-  if (custom_max_words !== undefined)  u.custom_max_words  = custom_max_words===null?null:parseInt(custom_max_words)||null;
-  if (reset_limit) { u.daily_msgs_used=0; u.daily_images_used=0; u.daily_files_used=0; u.last_reset=now(); }
-  if (notes !== undefined) u.notes = sanitize(notes, 500);
-  logEvent(db, "superadmin_update", { target:u.username, changes:req.body }); saveDB(db);
+app.put("/api/superadmin/user/:username", requireSuperAdmin, async (req, res) => {
+  const { role, plan, is_banned, ban_reason, custom_daily_msgs, custom_max_words, reset_limit, notes } = req.body;
+  const update = {};
+  if (role && ["user","admin"].includes(role))   update.role = role;
+  if (plan && ["free","pro"].includes(plan))      update.plan = plan;
+  if (typeof is_banned === "boolean")             update.is_banned = is_banned;
+  if (ban_reason !== undefined)                   update.ban_reason = sanitize(ban_reason, 200);
+  if (custom_daily_msgs !== undefined)            update.custom_daily_msgs = custom_daily_msgs===null?null:parseInt(custom_daily_msgs)||null;
+  if (custom_max_words !== undefined)             update.custom_max_words  = custom_max_words===null?null:parseInt(custom_max_words)||null;
+  if (notes !== undefined)                        update.notes = sanitize(notes, 500);
+  if (reset_limit) { update.daily_msgs_used=0; update.daily_images_used=0; update.daily_files_used=0; update.last_reset=now(); }
+  await User.findOneAndUpdate({ username: req.params.username }, update);
+  await logEvent("superadmin_update", { target:req.params.username });
   res.json({ ok:true });
 });
 
-app.delete("/api/superadmin/user/:username", requireSuperAdmin, (req, res) => {
-  const db = loadDB();
-  const u  = Object.values(db.users).find(x=>x.username===req.params.username);
+app.delete("/api/superadmin/user/:username", requireSuperAdmin, async (req, res) => {
+  const u = await User.findOne({ username: req.params.username });
   if (!u) return res.status(404).json({ error:"Not found" });
-  delete db.users[u.id];
-  const sessions = loadSessions();
-  Object.keys(sessions).forEach(k=>{if(sessions[k].user_id===u.id)delete sessions[k];});
-  saveSessions(sessions);
-  logEvent(db,"superadmin_delete",{target:u.username}); saveDB(db);
+  await Session.deleteMany({ user_id: u._id });
+  await User.findByIdAndDelete(u._id);
+  await logEvent("superadmin_delete", { target: req.params.username });
   res.json({ ok:true });
 });
 
-app.put("/api/superadmin/settings", requireSuperAdmin, (req, res) => {
-  const db = loadDB();
-  if (!db.settings) db.settings = {};
+app.put("/api/superadmin/settings", requireSuperAdmin, async (req, res) => {
   const { max_users, registration_open, default_daily_msgs, default_max_words, maintenance_mode, maintenance_msg } = req.body;
-  if (max_users !== undefined)          db.settings.max_users          = parseInt(max_users)||100;
-  if (registration_open !== undefined)  db.settings.registration_open  = !!registration_open;
-  if (default_daily_msgs !== undefined) db.settings.default_daily_msgs = parseInt(default_daily_msgs)||30;
-  if (default_max_words !== undefined)  db.settings.default_max_words  = parseInt(default_max_words)||400;
-  if (maintenance_mode !== undefined)   db.settings.maintenance_mode   = !!maintenance_mode;
-  if (maintenance_msg !== undefined)    db.settings.maintenance_msg    = sanitize(maintenance_msg,200);
-  logEvent(db,"superadmin_settings",req.body); saveDB(db);
-  res.json({ ok:true, settings:db.settings });
+  const update = {};
+  if (max_users !== undefined)          update.max_users          = parseInt(max_users)||100;
+  if (registration_open !== undefined)  update.registration_open  = !!registration_open;
+  if (default_daily_msgs !== undefined) update.default_daily_msgs = parseInt(default_daily_msgs)||20;
+  if (default_max_words !== undefined)  update.default_max_words  = parseInt(default_max_words)||400;
+  if (maintenance_mode !== undefined)   update.maintenance_mode   = !!maintenance_mode;
+  if (maintenance_msg !== undefined)    update.maintenance_msg    = sanitize(maintenance_msg, 200);
+  await Settings.findByIdAndUpdate("global", update, { upsert: true });
+  await logEvent("settings_update", req.body);
+  res.json({ ok:true });
 });
 
-app.get("/api/superadmin/export", requireSuperAdmin, (req, res) => {
-  const db = loadDB();
-  const jsonl = db.training.map(r => JSON.stringify({
-    messages:[{role:"system",content:"You are MedTerm AI."},{role:"user",content:r.user_msg},{role:"assistant",content:r.assistant_msg}]
-  })).join("\n");
+app.put("/api/superadmin/reports/:id", requireSuperAdmin, async (req, res) => {
+  await Report.findByIdAndUpdate(req.params.id, { status: req.body.status || "resolved" });
+  res.json({ ok:true });
+});
+
+app.get("/api/superadmin/export", requireSuperAdmin, async (req, res) => {
+  const training = await Training.find({}).lean();
+  const jsonl = training.map(r => JSON.stringify({ messages:[{ role:"system", content:"You are MedTerm AI." },{ role:"user", content:r.user_msg },{ role:"assistant", content:r.assistant_msg }] })).join("\n");
   res.setHeader("Content-Type","application/jsonl");
   res.setHeader("Content-Disposition","attachment; filename=training.jsonl");
   res.send(jsonl);
 });
 
 app.get("/dashboard", (_, res) => res.sendFile(path.join(__dirname,"../frontend/dashboard.html")));
-
-
-// Export chat as HTML
-app.get("/api/export/html/:conv_id", requireAuth, (req, res) => {
-  const db = loadDB(), u = db.users[req.user.user_id];
-  const cid = sanitize(req.params.conv_id);
-  const conv = u?.conversations?.[cid];
-  if (!conv) return res.status(404).json({ error_ar: "غير موجود" });
-  const msgs = conv.messages.map(m =>
-    `<div style="margin:14px 0;padding:12px 16px;background:${m.role==="user"?"#eef2ff":"#f9fafb"};border-radius:10px;font-family:Arial;direction:rtl">
-      <strong>${m.role==="user"?"أنت":"MedTerm"}</strong>
-      <div style="margin-top:6px;white-space:pre-wrap">${(m.content||"").replace(/</g,"&lt;")}</div>
-      <small style="color:#999;font-size:11px">${m.ts||""}</small>
-    </div>`).join("");
-  res.setHeader("Content-Type","text/html;charset=utf-8");
-  res.setHeader("Content-Disposition",`attachment; filename=chat.html`);
-  res.send(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"/><title>${conv.title}</title></head><body style="max-width:800px;margin:0 auto;padding:20px"><h1 style="color:#3b82f6">${conv.title}</h1>${msgs}<footer style="color:#999;font-size:12px;text-align:center;margin-top:20px;padding-top:10px;border-top:1px solid #eee">MedTerm v${APP_VERSION} · ${now()}</footer></body></html>`);
-});
-
-app.get("*", (_, res) => res.sendFile(path.join(__dirname, "../frontend/index.html")));
+app.get("*", (_, res) => res.sendFile(path.join(__dirname,"../frontend/index.html")));
 app.listen(PORT, () => console.log(`\nMedTerm v${APP_VERSION} → http://localhost:${PORT}\n`));
