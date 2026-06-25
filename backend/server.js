@@ -154,9 +154,9 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       scriptSrc:  ["'self'", "'unsafe-inline'"],
       styleSrc:   ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc:    ["'self'", "https://fonts.gstatic.com"],
+      fontSrc:    ["'self'", "https://fonts.gstatic.com", "https://fonts.googleapis.com"],
       imgSrc:     ["'self'", "data:", "blob:"],
-      connectSrc: ["'self'"],
+      connectSrc: ["'self'", "https://api.mistral.ai", "https://api-inference.huggingface.co", "https://api.search.brave.com"],
       frameSrc:   ["'none'"],
       objectSrc:  ["'none'"],
       baseUri:    ["'self'"]
