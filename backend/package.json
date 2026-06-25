@@ -1,6 +1,6 @@
 {
-  "name": "medterm-final",
-  "version": "2.0.0",
+  "name": "medterm-v6",
+  "version": "6.0.0",
   "main": "server.js",
   "dependencies": {
     "cors": "^2.8.5",
