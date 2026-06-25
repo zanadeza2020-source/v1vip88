@@ -274,6 +274,12 @@ tr:hover td{background:rgba(255,255,255,0.02)}
     <div class="modal-title" id="edit-title">تعديل المستخدم</div>
     <div class="modal-field"><div class="modal-lbl">الصلاحية</div>
       <select class="modal-inp" id="e-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
+    <div class="modal-field"><div class="modal-lbl">⭐ الخطة</div>
+      <select class="modal-inp" id="e-plan">
+        <option value="free">🆓 مجاني (20 رسالة/يوم)</option>
+        <option value="pro">⭐ VIP / مدفوع (200 رسالة/يوم)</option>
+      </select>
+    </div>
     <div class="modal-field"><div class="modal-lbl">الحد اليومي (فارغ = افتراضي)</div>
       <input class="modal-inp" id="e-daily" type="number" placeholder="مثال: 50"/></div>
     <div class="modal-field"><div class="modal-lbl">حد الكلمات (فارغ = افتراضي)</div>
@@ -450,6 +456,7 @@ function openEdit(username) {
   if (!editingUser) return;
   document.getElementById("edit-title").textContent = "تعديل: " + username;
   document.getElementById("e-role").value = editingUser.role;
+  document.getElementById("e-plan").value = editingUser.plan || "free";
   document.getElementById("e-daily").value = editingUser.custom_daily_msgs || "";
   document.getElementById("e-words").value = editingUser.custom_max_words || "";
   document.getElementById("e-notes").value = editingUser.notes || "";
@@ -463,11 +470,12 @@ function openEdit(username) {
 async function saveUser() {
   if (!editingUser) return;
   await api("PUT", "/api/superadmin/user/" + editingUser.username, {
-    role: document.getElementById("e-role").value,
+    role:              document.getElementById("e-role").value,
+    plan:              document.getElementById("e-plan").value,
     custom_daily_msgs: document.getElementById("e-daily").value || null,
     custom_max_words:  document.getElementById("e-words").value || null,
-    notes: document.getElementById("e-notes").value,
-    ban_reason: document.getElementById("e-ban-reason").value
+    notes:             document.getElementById("e-notes").value,
+    ban_reason:        document.getElementById("e-ban-reason").value
   });
   closeModal(); toast("✅ تم الحفظ", "ok"); loadData();
 }
