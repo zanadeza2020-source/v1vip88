@@ -634,8 +634,8 @@ function initUI() {
   document.getElementById("sb-ver").textContent = "v" + ver;
   document.getElementById("ver-chip").textContent = "v" + ver;
   if (profile.role === "admin") document.getElementById("admin-btn").style.display = "";
-  updateLim(profile.daily_used, profile.daily_limit);
-  applyTheme(profile.theme || "dark");
+  updateLim(me);
+  applyTheme(me.theme || "dark");
 
   // Greeting
   const h = new Date().getHours();
@@ -674,11 +674,17 @@ function buildToolbar() {
   ).join("");
 }
 
-function updateLim(used, limit) {
-  const rem = limit - used;
+function updateLim(me) {
+  if (!me) return;
+  const rem = me.daily_limit - me.daily_used;
   const c = document.getElementById("lim-chip");
-  c.textContent = rem + "/" + limit;
+  const planIcon = me.plan === "pro" ? "⭐" : me.role === "admin" ? "👑" : "🆓";
+  c.textContent = planIcon + " " + rem + "/" + me.daily_limit;
   c.className = "lim-chip" + (rem <= 3 ? " crit" : rem <= 8 ? " warn" : "");
+  c.title = (lang==="ar"?
+    `رسائل: ${me.daily_used}/${me.daily_limit} | صور: ${me.images_used||0}/${me.images_limit||5} | ملفات: ${me.files_used||0}/${me.files_limit||5} | يتجدد بعد ${Math.round(me.reset_in_hours||0)} ساعة` :
+    `Msgs: ${me.daily_used}/${me.daily_limit} | Images: ${me.images_used||0}/${me.images_limit||5} | Files: ${me.files_used||0}/${me.files_limit||5} | Resets in ${Math.round(me.reset_in_hours||0)}h`
+  );
 }
 
 // ── API ───────────────────────────────────────────────────────
@@ -801,7 +807,7 @@ async function doSend(text) {
             addCodeCopy(bubble);
             if (j.sources?.length) addSources(bubble, j.sources);
             const me2 = await api("GET", "/api/me").catch(() => null);
-            if (me2 && !me2.error) updateLim(me2.daily_used, me2.daily_limit);
+            if (me2 && !me2.error) updateLim(me2);
             loadConvs();
             if (voiceOut && full) speak(full);
           }
