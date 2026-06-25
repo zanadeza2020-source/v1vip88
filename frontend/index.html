@@ -4,6 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <meta name="theme-color" content="#0c0e14"/>
+<meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-title" content="MedTerm"/>
 <meta http-equiv="X-Content-Type-Options" content="nosniff"/>
@@ -734,8 +735,8 @@ function initUI() {
   document.getElementById("sb-ver").textContent = "v" + ver;
   document.getElementById("ver-chip").textContent = "v" + ver;
   if (profile.role === "admin") document.getElementById("admin-btn").style.display = "";
-  updateLim(me);
-  applyTheme(me.theme || "dark");
+  updateLim(profile);
+  applyTheme(profile.theme || "dark");
 
   // Greeting
   const h = new Date().getHours();
@@ -842,8 +843,8 @@ async function doSend(text) {
   appendMsg("user", finalMsg, true, attachedImages[0], attachedDocs[0]?.name);
   document.getElementById("txt").value = "";
   document.getElementById("txt").style.height = "auto";
-  document.getElementById("wc-l").textContent = "";
-  document.getElementById("cc-l").textContent = "";
+  const wcEl = document.getElementById("wc-l");
+  if(wcEl) wcEl.textContent = "";
 
   const imgs = [...attachedImages], docs = [...attachedDocs];
   attachedImages = []; attachedDocs = [];
