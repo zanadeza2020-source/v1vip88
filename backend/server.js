@@ -595,14 +595,55 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
     }
   }
 
-  // Validate docs
+  // Validate & extract docs properly
   let safeDocs = [];
   if (Array.isArray(documents)) {
-    for (const doc of documents.slice(0, 2)) {
+    for (const doc of documents.slice(0, 3)) {
       if (!doc?.data || typeof doc.data !== "string") continue;
-      if (doc.data.length * 0.75 > 5 * 1024 * 1024) continue;
-      const text = doc.data.split(",")[1] ? Buffer.from(doc.data.split(",")[1], "base64").toString("utf8").slice(0, 8000) : null;
-      if (text) safeDocs.push({ name: doc.name || "file", text });
+      if (doc.data.length * 0.75 > 10 * 1024 * 1024) continue;
+
+      let extractedText = null;
+      const mimeType = doc.type || "";
+      const name = doc.name || "file";
+
+      try {
+        const base64 = doc.data.includes(",") ? doc.data.split(",")[1] : doc.data;
+        const buffer = Buffer.from(base64, "base64");
+
+        if (mimeType.includes("text") || name.match(/\.(txt|md|csv|json|js|py|html|css|xml|yaml|yml|sh|sql)$/i)) {
+          // Text files — read directly
+          extractedText = buffer.toString("utf8").slice(0, 12000);
+        } else if (name.match(/\.csv$/i)) {
+          // CSV — format nicely
+          extractedText = buffer.toString("utf8").slice(0, 8000);
+        } else if (name.match(/\.json$/i)) {
+          // JSON — parse and format
+          try {
+            const parsed = JSON.parse(buffer.toString("utf8"));
+            extractedText = JSON.stringify(parsed, null, 2).slice(0, 8000);
+          } catch { extractedText = buffer.toString("utf8").slice(0, 8000); }
+        } else if (mimeType.includes("pdf") || name.match(/\.pdf$/i)) {
+          // PDF — extract readable text (basic)
+          const raw = buffer.toString("latin1");
+          const textMatches = raw.match(/BT[\s\S]*?ET/g) || [];
+          const pdfText = textMatches.map(block => {
+            const tjMatch = block.match(/\(([^)]+)\)\s*Tj/g) || [];
+            return tjMatch.map(t => t.replace(/\(([^)]+)\)\s*Tj/, "$1")).join(" ");
+          }).join("\n").replace(/[^\x20-\x7E\u0600-\u06FF\n]/g," ").replace(/\s+/g," ").trim().slice(0, 8000);
+          extractedText = pdfText.length > 50 ? pdfText : "PDF content (binary — please describe what you need from this document)";
+        } else {
+          // Other — try as UTF-8 text
+          const raw = buffer.toString("utf8").replace(/[^\x20-\x7E\u0600-\u06FF\n\t]/g," ").replace(/\s+/g," ").trim();
+          extractedText = raw.length > 20 ? raw.slice(0, 8000) : null;
+        }
+      } catch { extractedText = null; }
+
+      if (extractedText) {
+        safeDocs.push({
+          name,
+          text: `=== File: ${name} ===\n${extractedText}\n=== End of ${name} ===`
+        });
+      }
     }
   }
 
@@ -660,12 +701,15 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
   history.forEach(m => mistralMsgs.push({ role: m.role, content: m.content }));
 
   if (safeImgs.length > 0) {
-    const parts = [{ type: "text", text: msg + (safeDocs.length ? "\n\n" + safeDocs.map(d => `[${d.name}]: ${d.text}`).join("\n\n") : "") }];
+    const docBlock = safeDocs.length ? "\n\n" + safeDocs.map(d => d.text).join("\n\n") : "";
+    const parts = [{ type: "text", text: msg + docBlock }];
     safeImgs.forEach(img => parts.push({ type: "image_url", image_url: { url: img } }));
     mistralMsgs.push({ role: "user", content: parts });
   } else {
-    const docText = safeDocs.length ? "\n\n" + safeDocs.map(d => `[File: ${d.name}]\n${d.text}`).join("\n\n") : "";
-    mistralMsgs.push({ role: "user", content: msg + docText });
+    const docBlock = safeDocs.length
+      ? "\n\n" + safeDocs.map(d => d.text).join("\n\n") + "\n\n---\nUser question about the file(s) above: " + msg
+      : msg;
+    mistralMsgs.push({ role: "user", content: docBlock });
   }
 
   send({ status: u.lang === "en" ? "🤖 Thinking..." : "🤖 جاري التفكير..." });
