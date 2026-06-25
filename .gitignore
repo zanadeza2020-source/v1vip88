@@ -1,0 +1,6 @@
+.env
+db.json
+sessions.json
+security.log
+node_modules/
+*.log
