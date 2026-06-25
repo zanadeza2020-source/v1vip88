@@ -682,10 +682,39 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
   if (msg.length > 8000) return res.status(400).json({ error_ar: "الرسالة طويلة جداً" });
   const wc = msg.trim().split(/\s+/).filter(Boolean).length;
   if (wc > lim.max_words) return res.status(429).json({ error_ar: `تجاوزت حد ${lim.max_words} كلمة` });
-  if (!usage.msgs_ok) return res.status(429).json({
-    error_ar: `وصلت للحد اليومي (${usage.msgs.limit} رسالة). يتجدد بعد ${Math.ceil(usage.reset_in)} ساعة`,
-    reset_in: usage.reset_in
-  });
+  if (!usage.msgs_ok) {
+    const subMsg = `عزيزي المستخدم،
+
+لقد انتهت فترتك التجريبية المجانية.
+
+يمكنك الآن الاشتراك في **MedTerm AI** — مساعدك الذكي المربوط بالذكاء الاصطناعي.
+
+**✨ مميزات الاشتراك:**
+1. بحث دقيق وإجابات موثوقة
+2. مرتبط بأقوى نماذج الذكاء الاصطناعي
+3. رسائل وصور بدون حدود
+4. يعمل حتى مع الإنترنت الضعيف
+
+**💰 السعر: 5 شيكل فقط / شهر**
+أرخص بـ 20 مرة من باقي أدوات الذكاء الاصطناعي!
+
+**طرق الدفع:**
+
+**بال باي أو جوال باي:**
+الرقم: 0597111855
+باسم: إياد معروف
+
+بعد التحويل راسل المهندس نادر:
+📱 [+972 59-385-0520](https://wa.me/972593850520)
+
+_يتجدد الحد المجاني بعد ${Math.ceil(usage.reset_in)} ساعة_`;
+
+    return res.status(429).json({
+      error_ar: subMsg,
+      is_subscription_msg: true,
+      reset_in: usage.reset_in
+    });
+  }
   if (u.last_msg_ts && Date.now() - u.last_msg_ts < 1500) return res.status(429).json({ error_ar: "انتظر قبل الإرسال" });
 
   // Auto-create conversation if not exists
