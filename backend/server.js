@@ -582,6 +582,13 @@ app.post("/api/chat/stream", requireAuth, checkMaintenance, chatLimiter, async (
   if (!limitCheck.ok) return res.status(429).json({ error_ar: `وصلت للحد اليومي (${lim.daily_msgs} رسالة)` });
   if (u.last_msg_ts && Date.now() - u.last_msg_ts < 1500) return res.status(429).json({ error_ar: "انتظر قبل الإرسال" });
 
+  // Auto-create conversation if not exists
+  if (!u.conversations) u.conversations = {};
+  if (!u.conversations[cid]) {
+    u.conversations[cid] = { id: cid, title: msg.slice(0, 45), created: now(), last_msg: now(), messages: [], archived: false };
+    saveDB(db);
+  }
+
   const conv = u.conversations?.[cid];
   if (!conv) return res.status(404).json({ error_ar: "المحادثة غير موجودة" });
 
@@ -941,10 +948,119 @@ app.get("/api/admin/security-log", requireAuth, requireAdmin, (req, res) => {
   } catch { res.json({ logs: [] }); }
 });
 
-// Admin panel
-app.get("/admin", requireAuth, requireAdmin, (_, res) =>
-  res.sendFile(path.join(__dirname, "../frontend/admin.html"))
-);
+
+// ── STANDALONE ADMIN LOGIN ────────────────────────────────────
+const ADMIN_USER = process.env.ADMIN_USER || "medterm_admin";
+const ADMIN_PASS = process.env.ADMIN_PASS || "change_me_now";
+const adminTokens = new Map();
+
+app.post("/api/superadmin/login", loginLimiter, (req, res) => {
+  const { username, password } = req.body;
+  if (username !== ADMIN_USER || password !== ADMIN_PASS) {
+    secLog("SUPERADMIN_FAILED", { ip: req.ip });
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+  const token = randToken();
+  adminTokens.set(token, { created: Date.now() });
+  setTimeout(() => adminTokens.delete(token), 3600000); // 1h expiry
+  res.json({ token });
+});
+
+function requireSuperAdmin(req, res, next) {
+  const token = req.headers["x-admin-token"];
+  const sess  = token && adminTokens.get(token);
+  if (!sess || Date.now() - sess.created > 3600000) {
+    adminTokens.delete(token);
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+  next();
+}
+
+app.get("/api/superadmin/data", requireSuperAdmin, (req, res) => {
+  const db = loadDB();
+  const users = Object.values(db.users);
+  const totalMsgs   = users.reduce((a,u) => a+(u.total_msgs||0), 0);
+  const totalTokens = users.reduce((a,u) => a+(u.total_tokens||0), 0);
+  const todayUsage  = users.reduce((a,u) => a+(u.usage_date===today()?(u.daily_used||0):0), 0);
+  const act = {};
+  db.training.forEach(t => { const d=t.ts?.slice(0,10); if(d) act[d]=(act[d]||0)+1; });
+  res.json({
+    overview: {
+      totalUsers: users.length, totalMsgs, totalTokens, totalTraining: db.training.length,
+      activeToday: users.filter(u=>u.last_active?.slice(0,10)===today()).length,
+      bannedCount: users.filter(u=>u.is_banned).length, todayUsage,
+      pendingReports: (db.reports||[]).filter(r=>r.status==="pending").length,
+      settings: db.settings || {}
+    },
+    users: users.map(u => ({
+      id:u.id, username:u.username, role:u.role,
+      total_msgs:u.total_msgs||0, total_tokens:u.total_tokens||0,
+      daily_used: u.usage_date===today()?(u.daily_used||0):0,
+      daily_limit: getUserLimits(u, db.settings||{}).daily_msgs,
+      is_banned:u.is_banned||false, ban_reason:u.ban_reason||"",
+      created:u.created, last_active:u.last_active,
+      custom_daily_msgs:u.custom_daily_msgs, custom_max_words:u.custom_max_words, notes:u.notes||""
+    })),
+    activity: Object.entries(act).sort().slice(-14).map(([day,count])=>({day,count})),
+    reports: (db.reports||[]).slice(-30).reverse(),
+    events: (db.events||[]).slice(-50).reverse()
+  });
+});
+
+app.put("/api/superadmin/user/:username", requireSuperAdmin, (req, res) => {
+  const db = loadDB();
+  const u  = Object.values(db.users).find(x=>x.username===req.params.username);
+  if (!u) return res.status(404).json({ error:"Not found" });
+  const { role, is_banned, ban_reason, custom_daily_msgs, custom_max_words, reset_limit, notes } = req.body;
+  if (role && ["user","admin"].includes(role)) u.role = role;
+  if (typeof is_banned === "boolean") u.is_banned = is_banned;
+  if (ban_reason !== undefined) u.ban_reason = sanitize(ban_reason, 200);
+  if (custom_daily_msgs !== undefined) u.custom_daily_msgs = custom_daily_msgs===null?null:parseInt(custom_daily_msgs)||null;
+  if (custom_max_words !== undefined)  u.custom_max_words  = custom_max_words===null?null:parseInt(custom_max_words)||null;
+  if (reset_limit) { u.daily_used=0; u.usage_date=today(); }
+  if (notes !== undefined) u.notes = sanitize(notes, 500);
+  logEvent(db, "superadmin_update", { target:u.username, changes:req.body }); saveDB(db);
+  res.json({ ok:true });
+});
+
+app.delete("/api/superadmin/user/:username", requireSuperAdmin, (req, res) => {
+  const db = loadDB();
+  const u  = Object.values(db.users).find(x=>x.username===req.params.username);
+  if (!u) return res.status(404).json({ error:"Not found" });
+  delete db.users[u.id];
+  const sessions = loadSessions();
+  Object.keys(sessions).forEach(k=>{if(sessions[k].user_id===u.id)delete sessions[k];});
+  saveSessions(sessions);
+  logEvent(db,"superadmin_delete",{target:u.username}); saveDB(db);
+  res.json({ ok:true });
+});
+
+app.put("/api/superadmin/settings", requireSuperAdmin, (req, res) => {
+  const db = loadDB();
+  if (!db.settings) db.settings = {};
+  const { max_users, registration_open, default_daily_msgs, default_max_words, maintenance_mode, maintenance_msg } = req.body;
+  if (max_users !== undefined)          db.settings.max_users          = parseInt(max_users)||100;
+  if (registration_open !== undefined)  db.settings.registration_open  = !!registration_open;
+  if (default_daily_msgs !== undefined) db.settings.default_daily_msgs = parseInt(default_daily_msgs)||30;
+  if (default_max_words !== undefined)  db.settings.default_max_words  = parseInt(default_max_words)||400;
+  if (maintenance_mode !== undefined)   db.settings.maintenance_mode   = !!maintenance_mode;
+  if (maintenance_msg !== undefined)    db.settings.maintenance_msg    = sanitize(maintenance_msg,200);
+  logEvent(db,"superadmin_settings",req.body); saveDB(db);
+  res.json({ ok:true, settings:db.settings });
+});
+
+app.get("/api/superadmin/export", requireSuperAdmin, (req, res) => {
+  const db = loadDB();
+  const jsonl = db.training.map(r => JSON.stringify({
+    messages:[{role:"system",content:"You are MedTerm AI."},{role:"user",content:r.user_msg},{role:"assistant",content:r.assistant_msg}]
+  })).join("\n");
+  res.setHeader("Content-Type","application/jsonl");
+  res.setHeader("Content-Disposition","attachment; filename=training.jsonl");
+  res.send(jsonl);
+});
+
+app.get("/dashboard", (_, res) => res.sendFile(path.join(__dirname,"../frontend/dashboard.html")));
+
 
 // Export chat as HTML
 app.get("/api/export/html/:conv_id", requireAuth, (req, res) => {
