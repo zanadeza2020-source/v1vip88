@@ -781,7 +781,11 @@ async function doSend(text) {
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
       removeTyping(tid);
-      appendMsg("ai", "⚠️ " + (e.error_ar || e.error || "Error"));
+      if (e.is_subscription_msg) {
+        appendSubMsg(e.error_ar);
+      } else {
+        appendMsg("ai", "⚠️ " + (e.error_ar || e.error || "Error"));
+      }
       if (res.status === 401) { doLogout(); return; }
       busy = false; document.getElementById("send").disabled = false;
       return;
@@ -899,6 +903,36 @@ function appendMsg(role, text, anim=true, imgSrc=null, docName=null, deep=false)
   cnt.innerHTML = role === "ai" ? renderMD(text) : esc(text).replace(/\n/g,"<br>");
   bub.appendChild(cnt);
   if (role === "ai") addCodeCopy(bub);
+  body.appendChild(bub); w.appendChild(av); w.appendChild(body);
+  document.getElementById("chat").appendChild(w); scrollBot();
+}
+
+function appendSubMsg(text) {
+  const w = mkEl("div","msg ai"); w.style.animation="none";
+  const av = mkEl("div","av"); av.textContent="MT";
+  const body = mkEl("div","msg-body");
+  const bub = mkEl("div","bubble");
+  bub.style.cssText="border-color:rgba(212,168,67,0.3);background:rgba(212,168,67,0.04);max-width:100%";
+
+  // Header
+  const hdr = mkEl("div","");
+  hdr.style.cssText="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-bottom:10px;border-bottom:0.5px solid rgba(212,168,67,0.2)";
+  hdr.innerHTML='<span style="font-size:20px">⏰</span><span style="font-size:14px;font-weight:600;color:#d4a843">'+(lang==="ar"?"انتهت الفترة التجريبية":"Free Trial Ended")+'</span>';
+  bub.appendChild(hdr);
+
+  // Content
+  const cnt = mkEl("div","");
+  cnt.innerHTML = renderMD(text);
+  bub.appendChild(cnt);
+
+  // CTA Button
+  const btn = document.createElement("a");
+  btn.href="https://wa.me/972593850520";
+  btn.target="_blank";
+  btn.style.cssText="display:block;margin-top:14px;padding:11px;background:linear-gradient(135deg,#25D366,#128C7E);color:#fff;border-radius:10px;text-align:center;font-weight:600;font-size:14px;text-decoration:none";
+  btn.innerHTML='📱 ' + (lang==="ar"?"تواصل للاشتراك الآن":"Contact to Subscribe Now");
+  bub.appendChild(btn);
+
   body.appendChild(bub); w.appendChild(av); w.appendChild(body);
   document.getElementById("chat").appendChild(w); scrollBot();
 }
