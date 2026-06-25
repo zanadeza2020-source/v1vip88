@@ -180,31 +180,75 @@ header{display:flex;align-items:center;justify-content:space-between;padding:10p
 .typing-w span:nth-child(2){animation-delay:.2s}.typing-w span:nth-child(3){animation-delay:.4s}
 @keyframes dot{0%,80%,100%{transform:scale(.8);opacity:.4}40%{transform:scale(1.1);opacity:1}}
 
-/* ── INPUT ── */
-#inp-wrap{padding:8px 12px;padding-bottom:calc(8px + env(safe-area-inset-bottom));background:rgba(12,14,20,.95);border-top:0.5px solid var(--border);flex-shrink:0}
-.toolbar{display:flex;gap:5px;margin-bottom:7px;flex-wrap:wrap}
-.tb{display:flex;align-items:center;gap:4px;padding:5px 10px;border-radius:7px;background:var(--bg3);border:0.5px solid var(--border);color:var(--text2);cursor:pointer;font-size:11.5px;font-family:var(--font);transition:var(--t);white-space:nowrap}
-.tb:hover{background:var(--bg4);color:var(--text)}
-.tb.on{background:rgba(91,141,239,0.1);border-color:rgba(91,141,239,0.25);color:var(--accent2)}
-.tb.on.srch{background:rgba(52,194,138,0.08);border-color:rgba(52,194,138,0.2);color:var(--green)}
-.tb.on.deep{background:rgba(157,127,232,0.1);border-color:rgba(157,127,232,0.25);color:var(--purple)}
-.att-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:7px}
+/* ── INPUT — WhatsApp Style ── */
+#inp-wrap{
+  padding:8px 10px;
+  padding-bottom:calc(8px + env(safe-area-inset-bottom));
+  background:var(--bg2);
+  border-top:0.5px solid var(--border);
+  flex-shrink:0;
+}
+.att-row{display:flex;gap:6px;flex-wrap:wrap;padding:6px 0 4px}
 .att-item{position:relative;display:inline-flex}
-.att-img-t{width:50px;height:50px;object-fit:cover;border-radius:8px;border:0.5px solid var(--border2)}
+.att-img-t{width:52px;height:52px;object-fit:cover;border-radius:8px;border:0.5px solid var(--border2)}
 .att-doc-c{display:flex;align-items:center;gap:4px;background:rgba(157,127,232,0.08);border:0.5px solid rgba(157,127,232,0.18);border-radius:7px;padding:5px 10px;font-size:11.5px;color:var(--purple);max-width:140px}
 .att-doc-c span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .att-rm{position:absolute;top:-5px;left:-5px;width:16px;height:16px;background:var(--red);border:none;border-radius:50%;color:#fff;font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center}
-.inp-box{background:var(--bg3);border:0.5px solid var(--border2);border-radius:15px;padding:8px 10px;transition:border-color var(--t),box-shadow var(--t)}
-.inp-box:focus-within{border-color:rgba(91,141,239,0.35);box-shadow:0 0 0 3px var(--glow)}
-.inp-row{display:flex;gap:6px;align-items:flex-end}
-#txt{flex:1;background:transparent;border:none;outline:none;color:var(--text);font-size:14.5px;line-height:1.5;resize:none;max-height:120px;font-family:var(--font);direction:rtl}
+
+.chat-inp-row{
+  display:flex;align-items:flex-end;gap:7px;
+}
+.inp-left-btns,.inp-right-btns{display:flex;align-items:flex-end;gap:4px;flex-shrink:0}
+.inp-icon-btn{
+  width:36px;height:36px;border-radius:50%;
+  background:var(--bg3);border:0.5px solid var(--border2);
+  color:var(--text2);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:var(--t);flex-shrink:0;
+}
+.inp-icon-btn:hover{background:var(--bg4);color:var(--text)}
+.inp-icon-btn.rec{background:rgba(224,92,92,.15);border-color:rgba(224,92,92,.3);color:var(--red);animation:pulse-rec 1s infinite}
+@keyframes pulse-rec{0%,100%{box-shadow:0 0 0 0 rgba(224,92,92,.3)}50%{box-shadow:0 0 0 5px rgba(224,92,92,.0)}}
+.inp-box{
+  flex:1;min-width:0;
+  background:var(--bg3);border:0.5px solid var(--border2);
+  border-radius:22px;padding:8px 14px;
+  transition:border-color var(--t),box-shadow var(--t);
+}
+.inp-box:focus-within{border-color:rgba(91,141,239,0.4);box-shadow:0 0 0 3px var(--glow)}
+#txt{
+  width:100%;background:transparent;border:none;outline:none;
+  color:var(--text);font-size:14.5px;line-height:1.5;
+  resize:none;max-height:120px;font-family:var(--font);
+  direction:rtl;display:block;
+}
 #txt::placeholder{color:var(--text3)}
-.inp-acts{display:flex;gap:4px;align-items:flex-end}
-.in-btn{width:30px;height:30px;border-radius:8px;background:var(--bg4);border:0.5px solid var(--border);color:var(--text2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:var(--t)}
-.in-btn:hover{background:var(--bg5)}.in-btn.rec{background:rgba(224,92,92,.12);border-color:rgba(224,92,92,.25);color:var(--red)}
-#send{width:32px;height:32px;border-radius:9px;flex-shrink:0;background:var(--accent);border:none;color:#fff;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 12px var(--glow);transition:var(--t)}
-#send:hover{filter:brightness(1.1)}#send:disabled{opacity:.25;cursor:default;box-shadow:none}#send:active:not(:disabled){transform:scale(.92)}
-.inp-ft{display:flex;justify-content:space-between;padding:3px 1px 0;font-size:10.5px;color:var(--text3)}
+#send{
+  width:38px;height:38px;border-radius:50%;flex-shrink:0;
+  background:var(--accent);border:none;color:#fff;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 3px 12px var(--glow);transition:var(--t);
+}
+#send:hover{filter:brightness(1.1)}
+#send:disabled{opacity:.25;cursor:default;box-shadow:none}
+#send:active:not(:disabled){transform:scale(.9)}
+
+/* Extra bar */
+.extra-bar{
+  display:flex;align-items:center;gap:5px;
+  padding:5px 4px 0;flex-wrap:wrap;
+}
+.ex-btn{
+  display:flex;align-items:center;gap:4px;
+  padding:4px 9px;border-radius:12px;
+  background:var(--bg3);border:0.5px solid var(--border);
+  color:var(--text2);cursor:pointer;font-size:11.5px;
+  font-family:var(--font);transition:var(--t);white-space:nowrap;
+}
+.ex-btn:hover{background:var(--bg4);color:var(--text)}
+.ex-btn.on{background:rgba(91,141,239,0.12);border-color:rgba(91,141,239,0.3);color:var(--accent2)}
+.ex-btn.on.srch{background:rgba(52,194,138,0.1);border-color:rgba(52,194,138,0.25);color:var(--green)}
+.ex-btn.on.deep{background:rgba(157,127,232,0.1);border-color:rgba(157,127,232,0.25);color:var(--purple)}
 #f-img{display:none}#f-doc{display:none}
 
 /* ── MODALS ── */
@@ -340,20 +384,76 @@ header{display:flex;align-items:center;justify-content:space-between;padding:10p
     </div>
 
     <div id="inp-wrap">
-      <div class="toolbar" id="toolbar"></div>
-      <div class="inp-box">
-        <div class="att-row" id="att-row" style="display:none"></div>
-        <div class="inp-row">
+      <!-- Attachments preview row -->
+      <div class="att-row" id="att-row" style="display:none"></div>
+
+      <!-- Mode indicators -->
+      <div id="mode-bar" style="display:none;padding:4px 12px 0;gap:5px;flex-wrap:wrap"></div>
+
+      <!-- Main input row — WhatsApp style -->
+      <div class="chat-inp-row">
+        <!-- Left side buttons -->
+        <div class="inp-left-btns">
+          <button class="inp-icon-btn" onclick="document.getElementById('f-img').click()" title="إرفاق صورة">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+          </button>
+          <button class="inp-icon-btn" onclick="document.getElementById('f-doc').click()" title="إرفاق ملف">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Text input -->
+        <div class="inp-box">
           <textarea id="txt" rows="1" maxlength="8000"></textarea>
-          <div class="inp-acts">
-            <button class="in-btn" id="mic-btn" onclick="toggleMic()">🎤</button>
-            <button id="send" onclick="doSend()"><svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
-          </div>
+        </div>
+
+        <!-- Right side buttons -->
+        <div class="inp-right-btns">
+          <button class="inp-icon-btn" id="mic-btn" onclick="toggleMic()" title="إدخال صوتي">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>
+          <button id="send" onclick="doSend()">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+            </svg>
+          </button>
         </div>
       </div>
-      <div class="inp-ft"><span id="wc-l"></span><span id="cc-l"></span></div>
+
+      <!-- Extra features bar -->
+      <div class="extra-bar">
+        <button class="ex-btn" id="ex-srch" onclick="toggleSearch()" title="بحث في الإنترنت">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span id="ex-srch-lbl">بحث</span>
+        </button>
+        <button class="ex-btn" id="ex-deep" onclick="toggleDeep()" title="تفكير عميق">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+          <span id="ex-deep-lbl">تفكير عميق</span>
+        </button>
+        <button class="ex-btn" id="ex-igen" onclick="toggleImgGen()" title="توليد صورة">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span id="ex-igen-lbl">توليد صورة</span>
+        </button>
+        <button class="ex-btn" id="ex-voice" onclick="toggleVoiceOut()" title="ردود صوتية">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+          <span id="ex-voice-lbl">صوت</span>
+        </button>
+        <div style="margin-right:auto;font-size:10.5px;color:var(--text3)" id="wc-l"></div>
+      </div>
+
       <input type="file" id="f-img" accept="image/*" multiple onchange="onImgs(this)"/>
-      <input type="file" id="f-doc" accept=".pdf,.txt,.md,.csv,.json,.py,.js,.html,.css" multiple onchange="onDocs(this)"/>
+      <input type="file" id="f-doc" accept=".pdf,.txt,.md,.csv,.json,.py,.js,.html,.css,.docx,.xlsx" multiple onchange="onDocs(this)"/>
     </div>
   </div>
 </div>
@@ -650,8 +750,9 @@ function initUI() {
     `<div class="chip" onclick="useChip(this)">${c}</div>`).join("");
 
   // Toolbar
-  buildToolbar();
-
+  // Set placeholder
+  document.getElementById("txt").placeholder = t("placeholder");
+  document.getElementById("sb-q").placeholder = t("sb_search");
   // Settings dropdowns
   document.getElementById("s-theme").value = profile.theme || "dark";
   document.getElementById("s-pers").value  = profile.personality || "precise";
@@ -659,20 +760,6 @@ function initUI() {
   document.getElementById("s-lang").onchange = e => switchLang(e.target.value);
 }
 
-function buildToolbar() {
-  const items = [
-    { id:"tb-srch", key:"search",     click:"toggleSearch()",  onKey:"search_on",   offKey:"search_off"   },
-    { id:"tb-deep", key:"deep",       click:"toggleDeep()",    onKey:"deep_on",     offKey:"deep_off"     },
-    { id:"tb-img",  key:"img_attach", click:"document.getElementById('f-img').click()" },
-    { id:"tb-doc",  key:"doc_attach", click:"document.getElementById('f-doc').click()" },
-    { id:"tb-igen", key:"img_gen",    click:"toggleImgGen()",  onKey:"imggen_on",   offKey:"imggen_off"   },
-    { id:"tb-vout", key:"voice_out",  click:"toggleVoiceOut()",onKey:"voice_on",    offKey:"voice_off"    },
-    { id:"tb-rep",  key:"report",     click:"openReport()" }
-  ];
-  document.getElementById("toolbar").innerHTML = items.map(i =>
-    `<button class="tb" id="${i.id}" onclick="${i.click}">${t(i.key)}</button>`
-  ).join("");
-}
 
 function updateLim(me) {
   if (!me) return;
@@ -883,12 +970,40 @@ function showAtt(el) { const r = document.getElementById("att-row"); r.appendChi
 function toB64(f) { return new Promise(r => { const fr = new FileReader(); fr.onload = e => r(e.target.result); fr.readAsDataURL(f); }); }
 
 // ── TOOLBAR ───────────────────────────────────────────────────
-function toggleSearch()  { useSearch  = !useSearch;  const b = document.getElementById("tb-srch"); if(b){b.classList.toggle("on",useSearch);b.classList.toggle("srch",useSearch);} toast(useSearch?t("search_on"):t("search_off")); }
-function toggleDeep()    { useDeep    = !useDeep;    const b = document.getElementById("tb-deep"); if(b){b.classList.toggle("on",useDeep);b.classList.toggle("deep",useDeep);} toast(useDeep?t("deep_on"):t("deep_off")); }
-function toggleImgGen()  { useImgGen  = !useImgGen;  const b = document.getElementById("tb-igen"); if(b)b.classList.toggle("on",useImgGen); toast(useImgGen?t("imggen_on"):t("imggen_off")); }
-function toggleVoiceOut(){ voiceOut   = !voiceOut;   const b = document.getElementById("tb-vout"); if(b)b.classList.toggle("on",voiceOut); toast(voiceOut?t("voice_on"):t("voice_off")); }
-function toggleFocus()   { focusMode  = !focusMode;  document.getElementById("app").classList.toggle("focus-mode",focusMode); document.getElementById("focus-btn").classList.toggle("on",focusMode); toast(focusMode?t("focus_on"):t("focus_off")); }
-function openReport()    { document.getElementById("rep-txt").placeholder = t("report_reason"); openM("m-rep"); }
+function toggleSearch()  {
+  useSearch = !useSearch;
+  const b = document.getElementById("ex-srch");
+  if(b){b.classList.toggle("on",useSearch);b.classList.toggle("srch",useSearch);}
+  toast(useSearch ? t("search_on") : t("search_off"));
+}
+function toggleDeep()    {
+  useDeep = !useDeep;
+  const b = document.getElementById("ex-deep");
+  if(b){b.classList.toggle("on",useDeep);b.classList.toggle("deep",useDeep);}
+  toast(useDeep ? t("deep_on") : t("deep_off"));
+}
+function toggleImgGen()  {
+  useImgGen = !useImgGen;
+  const b = document.getElementById("ex-igen");
+  if(b) b.classList.toggle("on",useImgGen);
+  toast(useImgGen ? t("imggen_on") : t("imggen_off"));
+}
+function toggleVoiceOut(){
+  voiceOut = !voiceOut;
+  const b = document.getElementById("ex-voice");
+  if(b) b.classList.toggle("on",voiceOut);
+  toast(voiceOut ? t("voice_on") : t("voice_off"));
+}
+function toggleFocus()   {
+  focusMode = !focusMode;
+  document.getElementById("app").classList.toggle("focus-mode",focusMode);
+  document.getElementById("focus-btn").classList.toggle("on",focusMode);
+  toast(focusMode ? t("focus_on") : t("focus_off"));
+}
+function openReport()    {
+  document.getElementById("rep-txt").placeholder = t("report_reason");
+  openM("m-rep");
+}
 
 // ── RENDER ────────────────────────────────────────────────────
 function appendMsg(role, text, anim=true, imgSrc=null, docName=null, deep=false) {
@@ -1144,9 +1259,9 @@ function mout(e,id) { if (e.target === document.getElementById(id)) closeM(id); 
 const txtEl = document.getElementById("txt");
 txtEl.addEventListener("input", () => {
   autoGrow();
-  const w = txtEl.value.trim().split(/\s+/).filter(Boolean).length, c = txtEl.value.length;
-  document.getElementById("wc-l").textContent = w > 0 ? w + (lang==="ar"?" كلمة":" words") : "";
-  document.getElementById("cc-l").textContent = c > 6000 ? c + "/8000" : "";
+  const w = txtEl.value.trim().split(/\s+/).filter(Boolean).length;
+  const wEl = document.getElementById("wc-l");
+  if(wEl) wEl.textContent = w > 0 ? w + (lang==="ar"?" كلمة":" words") : "";
 });
 txtEl.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } });
 function autoGrow() { txtEl.style.height = "auto"; txtEl.style.height = Math.min(txtEl.scrollHeight, 120) + "px"; }
