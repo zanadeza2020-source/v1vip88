@@ -499,35 +499,55 @@ app.post("/api/report", requireAuth, (req, res) => {
   saveDB(db); res.json({ ok: true });
 });
 
-// ── WEB SEARCH ────────────────────────────────────────────────
+// ── WEB SEARCH via Mistral ────────────────────────────────────
 async function webSearch(query) {
-  const key = process.env.SEARCH_API_KEY;
-  if (!key) return null;
   try {
-    const r = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`, {
-      headers: { "Accept": "application/json", "X-Subscription-Token": key },
-      signal: AbortSignal.timeout(8000)
+    const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + process.env.MISTRAL_API_KEY },
+      body: JSON.stringify({
+        model: "mistral-small-latest",
+        messages: [
+          { role: "system", content: "You are a search assistant. When given a query, provide 5 relevant results in JSON format like: [{\"title\":\"...\",\"url\":\"...\",\"snippet\":\"...\"}]. Return ONLY the JSON array, no extra text." },
+          { role: "user", content: "Search for: " + query }
+        ],
+        temperature: 0.3, max_tokens: 800
+      }),
+      signal: AbortSignal.timeout(15000)
     });
     if (!r.ok) return null;
     const data = await r.json();
-    return (data.web?.results || []).slice(0, 5).map(r => ({ title: r.title, url: r.url, snippet: r.description || "" }));
+    const text = data.choices?.[0]?.message?.content || "";
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return null;
+    return JSON.parse(match[0]).slice(0, 5);
   } catch { return null; }
 }
 
-// ── IMAGE GENERATION ──────────────────────────────────────────
+// ── IMAGE GENERATION via Mistral ──────────────────────────────
 async function generateImage(prompt) {
-  const key = process.env.HF_API_KEY;
-  if (!key) return null;
+  // Mistral يولد وصفاً تفصيلياً للصورة ثم نعيده كـ SVG فني
   try {
-    const r = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
+    const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
       method: "POST",
-      headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-      body: JSON.stringify({ inputs: prompt }),
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + process.env.MISTRAL_API_KEY },
+      body: JSON.stringify({
+        model: "mistral-large-latest",
+        messages: [
+          { role: "system", content: "You are an SVG artist. Create a beautiful, detailed SVG image based on the user's description. Return ONLY the SVG code starting with <svg and ending with </svg>. Make it colorful, artistic, and detailed with gradients, shapes, and visual elements. Width: 512, Height: 512." },
+          { role: "user", content: "Create an SVG image of: " + prompt }
+        ],
+        temperature: 0.8, max_tokens: 2000
+      }),
       signal: AbortSignal.timeout(30000)
     });
     if (!r.ok) return null;
-    const buf = await r.arrayBuffer();
-    return "data:image/jpeg;base64," + Buffer.from(buf).toString("base64");
+    const data = await r.json();
+    const text = data.choices?.[0]?.message?.content || "";
+    const svgMatch = text.match(/<svg[\s\S]*<\/svg>/i);
+    if (!svgMatch) return null;
+    const svgB64 = Buffer.from(svgMatch[0]).toString("base64");
+    return "data:image/svg+xml;base64," + svgB64;
   } catch { return null; }
 }
 
@@ -536,7 +556,7 @@ app.post("/api/generate-image", requireAuth, chatLimiter, async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error_ar: "أدخل وصف الصورة" });
   const img = await generateImage(sanitize(prompt, 500));
-  if (!img) return res.status(503).json({ error_ar: "توليد الصور غير متاح. أضف HF_API_KEY في .env" });
+  if (!img) return res.status(503).json({ error_ar: "فشل توليد الصورة، حاول مجدداً" });
   res.json({ image: img });
 });
 
