@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet"/>
+<title>MedTerm — Shared</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0c0e14;--bg2:#11131a;--bg3:#161820;--bg4:#1c1f28;--text:#e2e4ed;--text2:#7a7d94;--text3:#3d4059;--accent:#5b8def;--border:rgba(255,255,255,.05);--border2:rgba(255,255,255,.09)}
+body{font-family:'IBM Plex Sans Arabic',-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.hdr{background:var(--bg2);border-bottom:0.5px solid var(--border);padding:14px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;backdrop-filter:blur(20px)}
+.logo{width:32px;height:32px;border-radius:9px;background:linear-gradient(145deg,#3d6fd4,#5b8def);display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:700;color:#fff}
+.logo-txt{font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:700;color:var(--text)}
+.badge{font-size:11px;background:rgba(91,141,239,.1);border:0.5px solid rgba(91,141,239,.2);color:#7aa5f5;border-radius:5px;padding:2px 8px;margin-right:auto}
+.conv-title{padding:20px 20px 8px;font-size:18px;font-weight:600}
+.meta{padding:0 20px 16px;font-size:12px;color:var(--text3)}
+.msg{display:flex;gap:8px;padding:0 16px;margin-bottom:14px}
+.msg.user{flex-direction:row-reverse}
+.av{width:28px;height:28px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:'Space Grotesk',sans-serif;margin-top:2px}
+.msg.user .av{background:var(--accent);color:#fff}
+.msg.ai .av{background:var(--bg4);border:0.5px solid var(--border2);color:#5eead4}
+.bubble{max-width:calc(100% - 40px);padding:10px 14px;font-size:14.5px;line-height:1.8;border-radius:13px}
+.msg.user .bubble{background:var(--bg4);border:0.5px solid var(--border2);border-top-right-radius:4px}
+.msg.ai .bubble{background:var(--bg2);border:0.5px solid var(--border);border-top-left-radius:4px;width:100%}
+.bubble p{margin:5px 0}.bubble p:first-child{margin-top:0}
+.bubble strong{color:#a3c0f8}
+.bubble code{background:rgba(91,141,239,.1);color:#93c5fd;padding:1px 5px;border-radius:4px;font-size:.86em;font-family:monospace}
+.bubble pre{background:#070810;border:0.5px solid var(--border2);border-radius:9px;padding:12px;margin:8px 0;overflow-x:auto;font-family:monospace;font-size:.84em;line-height:1.6;color:#93c5fd}
+.ts{font-size:10px;color:var(--text3);margin-top:3px}
+.footer{text-align:center;padding:24px;border-top:0.5px solid var(--border);margin-top:10px;color:var(--text3);font-size:12px}
+.footer a{color:var(--accent);text-decoration:none}
+.loading{text-align:center;padding:60px;color:var(--text2)}
+.error{text-align:center;padding:60px;color:#f8a0a0}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div class="logo">MT</div>
+  <div class="logo-txt">MedTerm</div>
+  <span class="badge">Shared Conversation</span>
+</div>
+<div id="root"><div class="loading">⏳ Loading...</div></div>
+<script>
+async function load(){
+  const id=location.pathname.split("/shared/")[1];
+  if(!id){document.getElementById("root").innerHTML='<div class="error">Invalid link</div>';return;}
+  const r=await fetch("/api/shared/"+id).then(x=>x.json()).catch(()=>null);
+  if(!r||r.error||r.error_ar){document.getElementById("root").innerHTML='<div class="error">❌ '+(r?.error_ar||r?.error||"Link invalid or expired")+'</div>';return;}
+  const msgs=r.messages.filter(m=>m.role!=="system");
+  document.title="MedTerm — "+r.title;
+  document.getElementById("root").innerHTML=`
+    <div class="conv-title">${esc(r.title)}</div>
+    <div class="meta">By ${esc(r.username)} · ${msgs.length} messages · ${new Date(r.created).toLocaleDateString()}</div>
+    ${msgs.map(m=>`
+      <div class="msg ${m.role}">
+        <div class="av">${m.role==="user"?"U":"MT"}</div>
+        <div>
+          <div class="bubble">${renderMD(m.content)}</div>
+          <div class="ts">${m.ts?new Date(m.ts).toLocaleString():""}</div>
+        </div>
+      </div>`).join("")}
+    <div class="footer">Shared via <a href="/">MedTerm AI</a> · Expires ${new Date(r.expires).toLocaleDateString()}</div>`;
+}
+function esc(t){return(t||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function renderMD(t){
+  t=esc(t);
+  t=t.replace(/```[\w]*\n?([\s\S]*?)```/g,(_,c)=>"<pre>"+c.trim()+"</pre>");
+  t=t.replace(/`([^`]+)`/g,"<code>$1</code>");
+  t=t.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
+  t=t.split(/\n{2,}/).map(p=>/^<(pre|ul|h)/.test(p.trim())?p:"<p>"+p.replace(/\n/g,"<br>")+"</p>").join("");
+  return t;
+}
+load();
+</script>
+</body>
+</html>
